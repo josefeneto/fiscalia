@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Arquivos processados (não versionar dados reais)
+arquivos/entrados/*
+arquivos/processados/*
+arquivos/rejeitados/*
+!arquivos/entrados/.gitkeep
+!arquivos/processados/.gitkeep
+!arquivos/rejeitados/.gitkeep
+
+# Arquivos de teste (manter exemplos apenas)
+Arquivos/Arquivos_Teste_NF/*
+!Arquivos/Arquivos_Teste_NF/exemplo_nfe.xml
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Docker
+*.dockerignore
+
+# Railway
+.railway/
