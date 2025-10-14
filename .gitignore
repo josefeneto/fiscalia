@@ -68,9 +68,9 @@ arquivos/rejeitados/*
 !arquivos/processados/.gitkeep
 !arquivos/rejeitados/.gitkeep
 
-# Arquivos de teste (manter exemplos apenas)
-Arquivos/Arquivos_Teste_NF/*
-!Arquivos/Arquivos_Teste_NF/exemplo_nfe.xml
+# Arquivos de teste
+arquivos_teste_NF/*
+
 
 # Streamlit
 .streamlit/secrets.toml
