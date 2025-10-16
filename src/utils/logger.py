@@ -1,124 +1,130 @@
 """
-Sistema de Logging do Fiscalia
-Configuração centralizada de logs usando Loguru
+Sistema de logging do Fiscalia
+Configura logs para console e arquivo
 """
+
+import logging
 import sys
 from pathlib import Path
-from loguru import logger
-from .config import settings, BASE_DIR
+from typing import Optional
 
-# Remover handler padrão
-logger.remove()
-
-# Configurar diretório de logs
-LOGS_DIR = BASE_DIR / "logs"
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-# ==================== Console Handler ====================
-# Log colorido no console para desenvolvimento
-logger.add(
-    sys.stdout,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-    level=settings.log_level,
-    colorize=True,
-)
-
-# ==================== File Handlers ====================
-# Log geral - todos os níveis
-logger.add(
-    LOGS_DIR / "fiscalia_{time:YYYY-MM-DD}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-    level="DEBUG",
-    rotation="00:00",  # Novo arquivo à meia-noite
-    retention="30 days",  # Manter logs por 30 dias
-    compression="zip",  # Comprimir logs antigos
-    encoding="utf-8",
-)
-
-# Log de erros - apenas erros e críticos
-logger.add(
-    LOGS_DIR / "fiscalia_errors_{time:YYYY-MM-DD}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-    level="ERROR",
-    rotation="00:00",
-    retention="90 days",  # Manter logs de erro por mais tempo
-    compression="zip",
-    encoding="utf-8",
-)
-
-# Log de processamento - específico para rastreamento de documentos
-logger.add(
-    LOGS_DIR / "processamento_{time:YYYY-MM-DD}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {extra[doc_id]} | {message}",
-    level="INFO",
-    rotation="00:00",
-    retention="90 days",
-    compression="zip",
-    encoding="utf-8",
-    filter=lambda record: "doc_id" in record["extra"],
-)
+from src.utils.config import get_settings
 
 
-def get_logger(name: str):
+def setup_logging(
+    log_level: Optional[str] = None,
+    log_file: Optional[str] = None
+) -> None:
     """
-    Retorna um logger configurado com o nome do módulo
+    Configura sistema de logging
+    
+    Args:
+        log_level: Nível de log (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Caminho do arquivo de log
+    """
+    settings = get_settings()
+    
+    # Define nível de log
+    if log_level is None:
+        log_level = settings.LOG_LEVEL
+    
+    # Define arquivo de log
+    if log_file is None:
+        log_file = settings.LOG_FILE
+    
+    # Converte string para nível
+    numeric_level = getattr(logging, log_level.upper(), logging.WARNING)
+    
+    # Cria diretório de logs se não existir
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Configuração do formato
+    log_format = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s - %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    
+    # Remove handlers existentes
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Configura logging básico
+    logging.basicConfig(
+        level=numeric_level,
+        format=log_format,
+        datefmt=date_format,
+        handlers=[
+            # Handler para arquivo
+            logging.FileHandler(log_file, encoding='utf-8'),
+            # Handler para console
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    # Silencia logs muito verbosos de bibliotecas externas
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    Retorna logger configurado para um módulo
     
     Args:
         name: Nome do módulo (geralmente __name__)
-    
+        
     Returns:
         Logger configurado
+    """
+    # Garante que logging está configurado
+    if not logging.getLogger().handlers:
+        setup_logging()
     
-    Example:
-        >>> from src.utils.logger import get_logger
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Mensagem de log")
-    """
-    return logger.bind(module=name)
+    return logging.getLogger(name)
 
 
-def log_document_processing(doc_id: str, message: str, level: str = "INFO"):
+def set_log_level(level: str) -> None:
     """
-    Log específico para processamento de documentos
-    
-    Args:
-        doc_id: ID do documento sendo processado
-        message: Mensagem a ser logada
-        level: Nível do log (INFO, WARNING, ERROR)
-    """
-    doc_logger = logger.bind(doc_id=doc_id)
-    
-    if level == "INFO":
-        doc_logger.info(message)
-    elif level == "WARNING":
-        doc_logger.warning(message)
-    elif level == "ERROR":
-        doc_logger.error(message)
-    else:
-        doc_logger.debug(message)
-
-
-def log_crew_activity(crew_name: str, agent_name: str, task_name: str, message: str):
-    """
-    Log específico para atividades do CrewAI
+    Altera nível de log em runtime
     
     Args:
-        crew_name: Nome da crew
-        agent_name: Nome do agente
-        task_name: Nome da task
-        message: Mensagem a ser logada
+        level: Novo nível (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
-    logger.bind(
-        crew=crew_name,
-        agent=agent_name,
-        task=task_name
-    ).info(message)
+    numeric_level = getattr(logging, level.upper(), logging.WARNING)
+    logging.getLogger().setLevel(numeric_level)
+    
+    # Atualiza todos os handlers
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(numeric_level)
 
 
-# Exportar para facilitar importação
+def get_log_file_path() -> Path:
+    """
+    Retorna caminho do arquivo de log
+    
+    Returns:
+        Path do arquivo de log
+    """
+    settings = get_settings()
+    return Path(settings.LOG_FILE)
+
+
+# ========================================================================
+# Inicialização automática
+# ========================================================================
+
+# Configura logging na importação do módulo
+setup_logging()
+
+
+# ========================================================================
+# Exportações
+# ========================================================================
+
 __all__ = [
-    "logger",
-    "get_logger",
-    "log_document_processing",
-    "log_crew_activity"
+    'setup_logging',
+    'get_logger',
+    'set_log_level',
+    'get_log_file_path',
 ]

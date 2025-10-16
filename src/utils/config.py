@@ -1,140 +1,231 @@
 """
-Configurações do Sistema Fiscalia
-Gerencia todas as variáveis de ambiente e configurações da aplicação
+Configurações do sistema Fiscalia
+Gerencia variáveis de ambiente e configurações globais
 """
-import os
+
 from pathlib import Path
-from typing import Literal
-from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from typing import Optional
+from functools import lru_cache
 
-# Carregar variáveis de ambiente
-load_dotenv()
-
-# Diretório base do projeto
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Configurações da aplicação usando Pydantic"""
+    """Configurações do sistema carregadas do arquivo .env"""
     
-    # ==================== LLM Configuration ====================
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    groq_model: str = os.getenv("GROQ_MODEL", "groq/llama-3.3-70b-versatile")
+    # ========================================================================
+    # LLM Configuration
+    # ========================================================================
     
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    # Provider selection
+    LLM_PROVIDER: str = "groq"  # groq ou openai
     
-    llm_provider: Literal["groq", "openai"] = os.getenv("LLM_PROVIDER", "groq")
+    # Groq settings
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "groq/llama-3.3-70b-versatile"
     
-    # ==================== Database Configuration ====================
-    db_type: Literal["sqlite", "postgresql"] = os.getenv("DB_TYPE", "sqlite")
-    sqlite_db_path: str = os.getenv("SQLITE_DB_PATH", "data/bd_fiscalia.db")
-    database_url: str = os.getenv("DATABASE_URL", "")
-    railway_volume_mount_path: str = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "/data")
+    # OpenAI settings
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
     
-    # ==================== Paths Configuration ====================
-    arquivos_base_path: Path = Path(os.getenv("ARQUIVOS_BASE_PATH", "arquivos"))
-    arquivos_entrados: Path = Path(os.getenv("ARQUIVOS_ENTRADOS", "arquivos/entrados"))
-    arquivos_processados: Path = Path(os.getenv("ARQUIVOS_PROCESSADOS", "arquivos/processados"))
-    arquivos_rejeitados: Path = Path(os.getenv("ARQUIVOS_REJEITADOS", "arquivos/rejeitados"))
+    # ========================================================================
+    # Database Configuration
+    # ========================================================================
     
-    # ==================== Application Configuration ====================
-    environment: Literal["development", "production"] = os.getenv("ENVIRONMENT", "development")
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    # Database type
+    DB_TYPE: str = "sqlite"  # sqlite ou postgresql
     
-    streamlit_server_port: int = int(os.getenv("STREAMLIT_SERVER_PORT", "8501"))
-    streamlit_server_address: str = os.getenv("STREAMLIT_SERVER_ADDRESS", "localhost")
+    # SQLite settings
+    SQLITE_DB_PATH: str = "data/bd_fiscalia.db"
     
-    # ==================== Processing Configuration ====================
-    max_files_per_batch: int = int(os.getenv("MAX_FILES_PER_BATCH", "100"))
-    max_file_size_mb: int = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
-    processing_timeout: int = int(os.getenv("PROCESSING_TIMEOUT", "300"))
+    # PostgreSQL settings (para uso futuro no Railway)
+    POSTGRES_HOST: Optional[str] = None
+    POSTGRES_PORT: int = 5432
+    POSTGRES_USER: Optional[str] = None
+    POSTGRES_PASSWORD: Optional[str] = None
+    POSTGRES_DB: Optional[str] = None
     
-    # ==================== Security ====================
-    secret_key: str = os.getenv("SECRET_KEY", "change-this-in-production")
+    # ========================================================================
+    # Application Configuration
+    # ========================================================================
     
-    # ==================== CrewAI Configuration ====================
-    crewai_verbose: bool = os.getenv("CREWAI_VERBOSE", "True").lower() == "true"
-    crewai_memory: bool = os.getenv("CREWAI_MEMORY", "True").lower() == "true"
+    # Logging
+    LOG_LEVEL: str = "WARNING"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_FILE: str = "fiscalia.log"
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    # Paths
+    BASE_PATH: str = "."
+    ARQUIVOS_PATH: str = "arquivos"
+    DATA_PATH: str = "data"
     
-    def get_database_path(self) -> str:
-        """Retorna o caminho correto do database baseado no ambiente"""
-        if self.environment == "production" and self.railway_volume_mount_path:
-            # Em produção no Railway, usar volume montado
-            return f"{self.railway_volume_mount_path}/bd_fiscalia.db"
+    # Railway volume mount (para persistência no Railway)
+    RAILWAY_VOLUME_MOUNT_PATH: Optional[str] = None
+    
+    # ========================================================================
+    # Processing Configuration
+    # ========================================================================
+    
+    # Limites de processamento
+    MAX_FILE_SIZE_MB: int = 10
+    BATCH_SIZE: int = 100
+    
+    # Timeouts
+    PROCESSING_TIMEOUT_SECONDS: int = 300
+    
+    # ========================================================================
+    # Pydantic Configuration
+    # ========================================================================
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore"  # Ignora variáveis extras no .env
+    )
+    
+    # ========================================================================
+    # Computed Properties
+    # ========================================================================
+    
+    @property
+    def database_url(self) -> str:
+        """
+        Retorna URL de conexão do banco de dados
+        
+        Returns:
+            String de conexão SQLAlchemy
+        """
+        if self.DB_TYPE == "sqlite":
+            # Ajusta path se estiver no Railway
+            if self.RAILWAY_VOLUME_MOUNT_PATH:
+                db_path = Path(self.RAILWAY_VOLUME_MOUNT_PATH) / "bd_fiscalia.db"
+            else:
+                db_path = Path(self.SQLITE_DB_PATH)
+            
+            return f"sqlite:///{db_path}"
+        
+        elif self.DB_TYPE == "postgresql":
+            if not all([self.POSTGRES_HOST, self.POSTGRES_USER, 
+                       self.POSTGRES_PASSWORD, self.POSTGRES_DB]):
+                raise ValueError("PostgreSQL configurado mas variáveis incompletas")
+            
+            return (
+                f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+                f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            )
+        
         else:
-            # Em desenvolvimento, usar caminho local
-            db_path = BASE_DIR / self.sqlite_db_path
-            # Criar diretório data se não existir
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            return str(db_path)
+            raise ValueError(f"DB_TYPE não suportado: {self.DB_TYPE}")
     
-    def get_llm_config(self) -> dict:
-        """Retorna configuração do LLM baseado no provider selecionado"""
-        if self.llm_provider == "groq":
+    @property
+    def llm_config(self) -> dict:
+        """
+        Retorna configuração da LLM baseada no provider
+        
+        Returns:
+            Dicionário com configuração da LLM
+        """
+        if self.LLM_PROVIDER == "groq":
             return {
-                "api_key": self.groq_api_key,
-                "model": self.groq_model,
-                "provider": "groq"
+                "provider": "groq",
+                "api_key": self.GROQ_API_KEY,
+                "model": self.GROQ_MODEL,
+            }
+        elif self.LLM_PROVIDER == "openai":
+            return {
+                "provider": "openai",
+                "api_key": self.OPENAI_API_KEY,
+                "model": self.OPENAI_MODEL,
             }
         else:
-            return {
-                "api_key": self.openai_api_key,
-                "model": self.openai_model,
-                "provider": "openai"
-            }
+            raise ValueError(f"LLM_PROVIDER não suportado: {self.LLM_PROVIDER}")
     
-    def ensure_directories(self):
-        """Garante que todos os diretórios necessários existem"""
-        directories = [
-            self.arquivos_entrados,
-            self.arquivos_processados,
-            self.arquivos_rejeitados,
-            BASE_DIR / "data",
-            BASE_DIR / "logs"
-        ]
+    def get_full_path(self, relative_path: str) -> Path:
+        """
+        Retorna caminho completo baseado no BASE_PATH
         
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-            # Criar arquivo .gitkeep para manter diretório no Git
-            gitkeep = directory / ".gitkeep"
-            if not gitkeep.exists():
-                gitkeep.touch()
+        Args:
+            relative_path: Caminho relativo
+            
+        Returns:
+            Path absoluto
+        """
+        return Path(self.BASE_PATH) / relative_path
     
-    def validate_config(self) -> tuple[bool, list[str]]:
-        """Valida se as configurações essenciais estão presentes"""
-        errors = []
+    def validate_llm_config(self) -> bool:
+        """
+        Valida se configuração da LLM está completa
         
-        # Validar API keys
-        if self.llm_provider == "groq" and not self.groq_api_key:
-            errors.append("GROQ_API_KEY não configurada")
-        
-        if self.llm_provider == "openai" and not self.openai_api_key:
-            errors.append("OPENAI_API_KEY não configurada")
-        
-        # Validar paths
-        if not self.arquivos_base_path.exists():
-            errors.append(f"Diretório base de arquivos não existe: {self.arquivos_base_path}")
-        
-        return len(errors) == 0, errors
+        Returns:
+            True se configuração válida
+        """
+        if self.LLM_PROVIDER == "groq":
+            return bool(self.GROQ_API_KEY)
+        elif self.LLM_PROVIDER == "openai":
+            return bool(self.OPENAI_API_KEY)
+        return False
 
 
-# Instância global de configurações
-settings = Settings()
-
-# Garantir que os diretórios existem ao importar
-settings.ensure_directories()
-
-
+@lru_cache()
 def get_settings() -> Settings:
-    """Factory function para obter instância de configurações"""
-    return settings
+    """
+    Retorna instância única de Settings (cached)
+    
+    Returns:
+        Instância de Settings
+    """
+    return Settings()
 
 
-# Exportar para facilitar importação
-__all__ = ["settings", "get_settings", "Settings", "BASE_DIR"]
+# ========================================================================
+# Funções auxiliares
+# ========================================================================
+
+def get_database_path() -> Path:
+    """
+    Retorna caminho do banco de dados SQLite
+    
+    Returns:
+        Path do banco de dados
+    """
+    settings = get_settings()
+    
+    if settings.RAILWAY_VOLUME_MOUNT_PATH:
+        return Path(settings.RAILWAY_VOLUME_MOUNT_PATH) / "bd_fiscalia.db"
+    else:
+        return Path(settings.SQLITE_DB_PATH)
+
+
+def get_arquivos_path() -> Path:
+    """
+    Retorna caminho da pasta de arquivos
+    
+    Returns:
+        Path da pasta arquivos
+    """
+    settings = get_settings()
+    return Path(settings.ARQUIVOS_PATH)
+
+
+def is_railway_environment() -> bool:
+    """
+    Verifica se está rodando no Railway
+    
+    Returns:
+        True se no Railway
+    """
+    settings = get_settings()
+    return settings.RAILWAY_VOLUME_MOUNT_PATH is not None
+
+
+# ========================================================================
+# Exportações
+# ========================================================================
+
+__all__ = [
+    'Settings',
+    'get_settings',
+    'get_database_path',
+    'get_arquivos_path',
+    'is_railway_environment',
+]
