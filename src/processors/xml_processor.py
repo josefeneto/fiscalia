@@ -1,36 +1,31 @@
 """
-Processador XML para Notas Fiscais Brasileiras (NFe/NFCe/CTe/MDF-e)
-Extrai dados estruturados de arquivos XML conforme padrão SEFAZ
-Versão corrigida para XMLs com e sem namespace
+Processador de arquivos XML de documentos fiscais
+Suporta NFe, NFCe, CTe e MDFe
 """
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 import hashlib
 
-from src.utils.logger import get_logger
+from utils.logger import setup_logger
 
-logger = get_logger(__name__)
+logger = setup_logger(__name__)
 
 
 class XMLProcessor:
-    """Processador de XML de Notas Fiscais brasileiras"""
-    
-    # Namespaces comuns em NFe
-    NAMESPACES = {
-        'nfe': 'http://www.portalfiscal.inf.br/nfe',
-        'cte': 'http://www.portalfiscal.inf.br/cte',
-        'mdfe': 'http://www.portalfiscal.inf.br/mdfe'
-    }
+    """Processador genérico de XMLs fiscais"""
     
     def __init__(self):
         """Inicializa o processador XML"""
         self.current_file: Optional[Path] = None
         self.xml_root: Optional[ET.Element] = None
+        self.root: Optional[ET.Element] = None  # Alias para compatibilidade
+        self.tree: Optional[ET.ElementTree] = None
         self.doc_type: Optional[str] = None
-        
+        self.ns: Dict[str, str] = {}  # Namespace (vazio por padrão)
+    
     def load_xml(self, file_path: Path) -> bool:
         """
         Carrega arquivo XML
@@ -42,23 +37,28 @@ class XMLProcessor:
             True se carregou com sucesso, False caso contrário
         """
         try:
-            self.current_file = Path(file_path)
+            self.current_file = file_path
+            self.tree = ET.parse(file_path)
+            self.xml_root = self.tree.getroot()
+            self.root = self.xml_root  # Alias para compatibilidade
             
-            # Parse do XML
-            tree = ET.parse(file_path)
-            self.xml_root = tree.getroot()
+            # Detectar namespace (se houver)
+            if self.root.tag.startswith('{'):
+                # Tem namespace
+                ns_match = self.root.tag[1:].split('}')[0]
+                self.ns = {'ns': ns_match}
+            else:
+                # Sem namespace
+                self.ns = {}
             
-            # Detecta tipo de documento
+            # Detectar tipo de documento
             self.doc_type = self._detect_doc_type()
             
             logger.info(f"XML carregado: {file_path.name} (Tipo: {self.doc_type})")
             return True
             
-        except ET.ParseError as e:
-            logger.error(f"Erro ao parsear XML {file_path.name}: {e}")
-            return False
         except Exception as e:
-            logger.error(f"Erro ao carregar XML {file_path.name}: {e}")
+            logger.error(f"Erro ao carregar XML {file_path}: {e}")
             return False
     
     def _detect_doc_type(self) -> str:
@@ -79,48 +79,48 @@ class XMLProcessor:
         elif 'mdfe' in root_tag:
             return 'MDFe'
         else:
-            return 'Desconhecido'
+            return 'Unknown'
     
     def extract_data(self) -> Dict[str, Any]:
         """
-        Extrai todos os dados relevantes do XML
+        Extrai dados do XML carregado
         
         Returns:
-            Dicionário com dados estruturados
+            Dicionário com dados estruturados do documento
         """
-        if not self.xml_root:
-            raise ValueError("Nenhum XML carregado. Use load_xml() primeiro.")
+        if self.xml_root is None:
+            logger.error("Nenhum XML carregado")
+            return {}
         
-        data = {
-            'tipo_documento': self.doc_type,
-            'arquivo_hash': self.calculate_file_hash(),
-            'metadados': self._extract_metadata(),
-            'emitente': self._extract_emitente(),
-            'destinatario': self._extract_destinatario(),
-            'valores': self._extract_valores(),
-            'impostos': self._extract_impostos(),
-            'itens': self._extract_itens(),
-            'transporte': self._extract_transporte(),
-        }
-        
-        return data
+        try:
+            data = {
+                'metadata': self._extract_metadata(),
+                'emitente': self._extract_emitente(),
+                'destinatario': self._extract_destinatario(),
+                'valores': self._extract_valores(),
+                'impostos': self._extract_impostos(),
+                'itens': self._extract_itens(),
+                'transporte': self._extract_transporte(),
+                'file_hash': self.calculate_file_hash()
+            }
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Erro ao extrair dados: {e}")
+            return {}
     
     def calculate_file_hash(self) -> str:
-        """
-        Calcula hash MD5 do arquivo para detecção de duplicados
-        
-        Returns:
-            Hash MD5 em hexadecimal
-        """
+        """Calcula hash SHA256 do arquivo"""
         if not self.current_file or not self.current_file.exists():
-            return ""
+            return ''
         
-        md5_hash = hashlib.md5()
-        with open(self.current_file, 'rb') as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                md5_hash.update(chunk)
-        
-        return md5_hash.hexdigest()
+        try:
+            with open(self.current_file, 'rb') as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except Exception as e:
+            logger.error(f"Erro ao calcular hash: {e}")
+            return ''
     
     def _extract_metadata(self) -> Dict[str, Any]:
         """Extrai metadados do documento"""
@@ -147,264 +147,300 @@ class XMLProcessor:
     def _extract_emitente(self) -> Dict[str, Any]:
         """Extrai dados do emitente"""
         return {
-            'cnpj': self._get_text('emit/CNPJ'),
-            'cpf': self._get_text('emit/CPF'),
-            'razao_social': self._get_text('emit/xNome'),
-            'nome_fantasia': self._get_text('emit/xFant'),
-            'inscricao_estadual': self._get_text('emit/IE'),
-            'inscricao_municipal': self._get_text('emit/IM'),
-            'cnae': self._get_text('emit/CNAE'),
-            'regime_tributario': self._get_text('emit/CRT'),
-            'endereco': {
-                'logradouro': self._get_text('emit/enderEmit/xLgr'),
-                'numero': self._get_text('emit/enderEmit/nro'),
-                'complemento': self._get_text('emit/enderEmit/xCpl'),
-                'bairro': self._get_text('emit/enderEmit/xBairro'),
-                'municipio': self._get_text('emit/enderEmit/xMun'),
-                'codigo_municipio': self._get_text('emit/enderEmit/cMun'),
-                'uf': self._get_text('emit/enderEmit/UF'),
-                'cep': self._get_text('emit/enderEmit/CEP'),
-                'pais': self._get_text('emit/enderEmit/xPais'),
-                'codigo_pais': self._get_text('emit/enderEmit/cPais'),
+            'CNPJ': self._get_text('emit/CNPJ'),
+            'CPF': self._get_text('emit/CPF'),
+            'xNome': self._get_text('emit/xNome'),
+            'xFant': self._get_text('emit/xFant'),
+            'IE': self._get_text('emit/IE'),
+            'IEST': self._get_text('emit/IEST'),
+            'IM': self._get_text('emit/IM'),
+            'CNAE': self._get_text('emit/CNAE'),
+            'CRT': self._get_text('emit/CRT'),
+            'enderEmit': {
+                'xLgr': self._get_text('emit/enderEmit/xLgr'),
+                'nro': self._get_text('emit/enderEmit/nro'),
+                'xCpl': self._get_text('emit/enderEmit/xCpl'),
+                'xBairro': self._get_text('emit/enderEmit/xBairro'),
+                'cMun': self._get_text('emit/enderEmit/cMun'),
+                'xMun': self._get_text('emit/enderEmit/xMun'),
+                'UF': self._get_text('emit/enderEmit/UF'),
+                'CEP': self._get_text('emit/enderEmit/CEP'),
+                'cPais': self._get_text('emit/enderEmit/cPais'),
+                'xPais': self._get_text('emit/enderEmit/xPais'),
+                'fone': self._get_text('emit/enderEmit/fone'),
             }
         }
     
     def _extract_destinatario(self) -> Dict[str, Any]:
         """Extrai dados do destinatário"""
         return {
-            'cnpj': self._get_text('dest/CNPJ'),
-            'cpf': self._get_text('dest/CPF'),
-            'razao_social': self._get_text('dest/xNome'),
-            'inscricao_estadual': self._get_text('dest/IE'),
-            'inscricao_municipal': self._get_text('dest/IM'),
+            'CNPJ': self._get_text('dest/CNPJ'),
+            'CPF': self._get_text('dest/CPF'),
+            'idEstrangeiro': self._get_text('dest/idEstrangeiro'),
+            'xNome': self._get_text('dest/xNome'),
+            'IE': self._get_text('dest/IE'),
+            'ISUF': self._get_text('dest/ISUF'),
+            'IM': self._get_text('dest/IM'),
             'email': self._get_text('dest/email'),
-            'indicador_ie': self._get_text('dest/indIEDest'),
-            'endereco': {
-                'logradouro': self._get_text('dest/enderDest/xLgr'),
-                'numero': self._get_text('dest/enderDest/nro'),
-                'complemento': self._get_text('dest/enderDest/xCpl'),
-                'bairro': self._get_text('dest/enderDest/xBairro'),
-                'municipio': self._get_text('dest/enderDest/xMun'),
-                'codigo_municipio': self._get_text('dest/enderDest/cMun'),
-                'uf': self._get_text('dest/enderDest/UF'),
-                'cep': self._get_text('dest/enderDest/CEP'),
-                'pais': self._get_text('dest/enderDest/xPais'),
-                'codigo_pais': self._get_text('dest/enderDest/cPais'),
+            'enderDest': {
+                'xLgr': self._get_text('dest/enderDest/xLgr'),
+                'nro': self._get_text('dest/enderDest/nro'),
+                'xCpl': self._get_text('dest/enderDest/xCpl'),
+                'xBairro': self._get_text('dest/enderDest/xBairro'),
+                'cMun': self._get_text('dest/enderDest/cMun'),
+                'xMun': self._get_text('dest/enderDest/xMun'),
+                'UF': self._get_text('dest/enderDest/UF'),
+                'CEP': self._get_text('dest/enderDest/CEP'),
+                'cPais': self._get_text('dest/enderDest/cPais'),
+                'xPais': self._get_text('dest/enderDest/xPais'),
+                'fone': self._get_text('dest/enderDest/fone'),
             }
         }
     
     def _extract_valores(self) -> Dict[str, Any]:
-        """Extrai valores totais da nota"""
+        """Extrai valores totais"""
         return {
-            'valor_produtos': self._get_decimal('total/ICMSTot/vProd'),
-            'valor_frete': self._get_decimal('total/ICMSTot/vFrete'),
-            'valor_seguro': self._get_decimal('total/ICMSTot/vSeg'),
-            'valor_desconto': self._get_decimal('total/ICMSTot/vDesc'),
-            'valor_outros': self._get_decimal('total/ICMSTot/vOutro'),
-            'valor_total': self._get_decimal('total/ICMSTot/vNF'),
-            'valor_bc_icms': self._get_decimal('total/ICMSTot/vBC'),
-            'valor_icms': self._get_decimal('total/ICMSTot/vICMS'),
-            'valor_ipi': self._get_decimal('total/ICMSTot/vIPI'),
-            'valor_pis': self._get_decimal('total/ICMSTot/vPIS'),
-            'valor_cofins': self._get_decimal('total/ICMSTot/vCOFINS'),
+            'vBC': self._get_decimal('total/ICMSTot/vBC'),
+            'vICMS': self._get_decimal('total/ICMSTot/vICMS'),
+            'vICMSDeson': self._get_decimal('total/ICMSTot/vICMSDeson'),
+            'vFCP': self._get_decimal('total/ICMSTot/vFCP'),
+            'vBCST': self._get_decimal('total/ICMSTot/vBCST'),
+            'vST': self._get_decimal('total/ICMSTot/vST'),
+            'vFCPST': self._get_decimal('total/ICMSTot/vFCPST'),
+            'vFCPSTRet': self._get_decimal('total/ICMSTot/vFCPSTRet'),
+            'vProd': self._get_decimal('total/ICMSTot/vProd'),
+            'vFrete': self._get_decimal('total/ICMSTot/vFrete'),
+            'vSeg': self._get_decimal('total/ICMSTot/vSeg'),
+            'vDesc': self._get_decimal('total/ICMSTot/vDesc'),
+            'vII': self._get_decimal('total/ICMSTot/vII'),
+            'vIPI': self._get_decimal('total/ICMSTot/vIPI'),
+            'vIPIDevol': self._get_decimal('total/ICMSTot/vIPIDevol'),
+            'vPIS': self._get_decimal('total/ICMSTot/vPIS'),
+            'vCOFINS': self._get_decimal('total/ICMSTot/vCOFINS'),
+            'vOutro': self._get_decimal('total/ICMSTot/vOutro'),
+            'vNF': self._get_decimal('total/ICMSTot/vNF'),
+            'vTotTrib': self._get_decimal('total/ICMSTot/vTotTrib'),
         }
     
     def _extract_impostos(self) -> Dict[str, Any]:
-        """Extrai detalhes dos impostos"""
+        """Extrai resumo de impostos"""
+        valores = self._extract_valores()
+        
         return {
-            'icms': {
-                'base_calculo': self._get_decimal('total/ICMSTot/vBC'),
-                'valor': self._get_decimal('total/ICMSTot/vICMS'),
-                'valor_st': self._get_decimal('total/ICMSTot/vST'),
-                'base_st': self._get_decimal('total/ICMSTot/vBCST'),
-            },
-            'ipi': {
-                'valor': self._get_decimal('total/ICMSTot/vIPI'),
-            },
-            'pis': {
-                'valor': self._get_decimal('total/ICMSTot/vPIS'),
-            },
-            'cofins': {
-                'valor': self._get_decimal('total/ICMSTot/vCOFINS'),
-            },
-            'tributos_aproximado': self._get_decimal('total/ICMSTot/vTotTrib'),
+            'ICMS': valores.get('vICMS', 0.0),
+            'IPI': valores.get('vIPI', 0.0),
+            'PIS': valores.get('vPIS', 0.0),
+            'COFINS': valores.get('vCOFINS', 0.0),
+            'total': (
+                valores.get('vICMS', 0.0) +
+                valores.get('vIPI', 0.0) +
+                valores.get('vPIS', 0.0) +
+                valores.get('vCOFINS', 0.0)
+            )
         }
     
     def _extract_itens(self) -> List[Dict[str, Any]]:
-        """Extrai lista de itens da nota"""
+        """Extrai itens/produtos da nota"""
         itens = []
         
-        # Busca todos os elementos 'det' (itens)
-        for det in self._find_all('det'):
-            # Busca elemento prod dentro de det
-            prod = None
-            
-            # Tenta sem namespace primeiro (mais comum)
-            prod = det.find('prod')
-            
-            # Se não encontrou, tenta com namespace
-            if prod is None:
-                for prefix, uri in self.NAMESPACES.items():
-                    prod = det.find(f'{{{uri}}}prod')
-                    if prod is not None:
-                        break
-            
-            if prod is None:
-                continue
-            
-            # Extrai dados do produto
+        # Buscar todos os elementos 'det'
+        det_elements = self._find_all('det')
+        
+        for det in det_elements:
             def get_prod_text(tag: str, default: str = '') -> str:
-                # Tenta sem namespace primeiro
-                elem = prod.find(tag)
-                if elem is not None and elem.text:
-                    return elem.text
-                
-                # Tenta com namespace
-                for prefix, uri in self.NAMESPACES.items():
-                    elem = prod.find(f'{{{uri}}}{tag}')
-                    if elem is not None and elem.text:
-                        return elem.text
-                
-                return default
+                """Helper para buscar texto dentro de prod"""
+                elem = det.find(f'.//prod/{tag}')
+                return elem.text if elem is not None and elem.text else default
             
             def get_prod_decimal(tag: str, default: float = 0.0) -> float:
+                """Helper para buscar decimal dentro de prod"""
                 text = get_prod_text(tag)
                 try:
                     return float(text) if text else default
-                except ValueError:
+                except (ValueError, TypeError):
                     return default
             
             item = {
-                'numero_item': det.get('nItem', ''),
-                'produto': {
-                    'codigo': get_prod_text('cProd'),
-                    'ean': get_prod_text('cEAN'),
-                    'descricao': get_prod_text('xProd'),
-                    'ncm': get_prod_text('NCM'),
-                    'cfop': get_prod_text('CFOP'),
-                    'unidade': get_prod_text('uCom'),
-                    'quantidade': get_prod_decimal('qCom'),
-                    'valor_unitario': get_prod_decimal('vUnCom'),
-                    'valor_total': get_prod_decimal('vProd'),
-                },
-                'impostos': {
-                    'cfop': get_prod_text('CFOP'),
-                    'icms_cst': '',
-                    'ipi_cst': '',
-                    'pis_cst': '',
-                    'cofins_cst': '',
-                }
+                'nItem': det.get('nItem', ''),
+                'cProd': get_prod_text('cProd'),
+                'cEAN': get_prod_text('cEAN'),
+                'xProd': get_prod_text('xProd'),
+                'NCM': get_prod_text('NCM'),
+                'CEST': get_prod_text('CEST'),
+                'CFOP': get_prod_text('CFOP'),
+                'uCom': get_prod_text('uCom'),
+                'qCom': get_prod_decimal('qCom'),
+                'vUnCom': get_prod_decimal('vUnCom'),
+                'vProd': get_prod_decimal('vProd'),
+                'cEANTrib': get_prod_text('cEANTrib'),
+                'uTrib': get_prod_text('uTrib'),
+                'qTrib': get_prod_decimal('qTrib'),
+                'vUnTrib': get_prod_decimal('vUnTrib'),
+                'vFrete': get_prod_decimal('vFrete'),
+                'vSeg': get_prod_decimal('vSeg'),
+                'vDesc': get_prod_decimal('vDesc'),
+                'vOutro': get_prod_decimal('vOutro'),
             }
+            
             itens.append(item)
         
         return itens
     
     def _extract_transporte(self) -> Dict[str, Any]:
-        """Extrai dados de transporte"""
+        """Extrai informações de transporte"""
         return {
-            'modalidade_frete': self._get_text('transp/modFrete'),
-            'transportadora': {
-                'cnpj': self._get_text('transp/transporta/CNPJ'),
-                'cpf': self._get_text('transp/transporta/CPF'),
-                'razao_social': self._get_text('transp/transporta/xNome'),
-                'inscricao_estadual': self._get_text('transp/transporta/IE'),
-                'endereco': self._get_text('transp/transporta/xEnder'),
-                'municipio': self._get_text('transp/transporta/xMun'),
-                'uf': self._get_text('transp/transporta/UF'),
+            'modFrete': self._get_text('transp/modFrete'),
+            'transporta': {
+                'CNPJ': self._get_text('transp/transporta/CNPJ'),
+                'CPF': self._get_text('transp/transporta/CPF'),
+                'xNome': self._get_text('transp/transporta/xNome'),
+                'IE': self._get_text('transp/transporta/IE'),
+                'xEnder': self._get_text('transp/transporta/xEnder'),
+                'xMun': self._get_text('transp/transporta/xMun'),
+                'UF': self._get_text('transp/transporta/UF'),
             },
-            'veiculo': {
+            'veicTransp': {
                 'placa': self._get_text('transp/veicTransp/placa'),
-                'uf': self._get_text('transp/veicTransp/UF'),
+                'UF': self._get_text('transp/veicTransp/UF'),
+                'RNTC': self._get_text('transp/veicTransp/RNTC'),
             }
         }
     
-    # Métodos auxiliares de navegação XML
-    
     def _get_text(self, path: str, default: str = '', attr: Optional[str] = None) -> str:
-        """Busca texto em caminho XML considerando namespaces"""
-        if not self.xml_root:
-            return default
+        """
+        Extrai texto de elemento XML
         
-        # Primeiro tenta sem namespace (mais comum em XMLs reais)
-        element = self.xml_root.find(f'.//{path}')
-        if element is not None:
-            if attr:
-                return element.get(attr, default)
-            return element.text or default
+        Args:
+            path: Caminho XPath do elemento
+            default: Valor padrão se não encontrado
+            attr: Nome do atributo (opcional)
         
-        # Tenta com namespace NFe
-        for prefix, uri in self.NAMESPACES.items():
-            namespaced_path = '/'.join([f'{{{uri}}}{p}' if not p.startswith('{') else p 
-                                       for p in path.split('/')])
-            element = self.xml_root.find(f'.//{namespaced_path}')
+        Returns:
+            Texto do elemento ou valor do atributo
+        """
+        try:
+            # Se tiver namespace, ajusta o path
+            if self.ns:
+                # Adiciona ns: antes de cada tag no path
+                ns_path = '/'.join([f"ns:{tag}" if tag else '' for tag in path.split('/')])
+                element = self.root.find(f'.//{ns_path}', self.ns)
+            else:
+                # Sem namespace - busca direta
+                element = self.root.find(f'.//{path}')
+            
             if element is not None:
                 if attr:
                     return element.get(attr, default)
                 return element.text or default
-        
-        return default
+            
+            return default
+        except Exception as e:
+            logger.warning(f"Erro ao extrair {path}: {e}")
+            return default
     
     def _get_text_from_element(self, element: ET.Element, path: str, default: str = '') -> str:
-        """Busca texto relativo a um elemento específico"""
-        if path.endswith('/*'):
-            # Busca qualquer filho (para CST, CSOSN etc)
-            parent_path = path.rstrip('/*')
-            parent = element.find(f'.//{parent_path}')
-            if parent is not None:
-                for child in parent:
-                    if child.text:
-                        return child.text
+        """Extrai texto de sub-elemento"""
+        try:
+            if self.ns:
+                ns_path = '/'.join([f"ns:{tag}" if tag else '' for tag in path.split('/')])
+                sub_elem = element.find(f'.//{ns_path}', self.ns)
+            else:
+                sub_elem = element.find(f'.//{path}')
+            
+            return sub_elem.text if sub_elem is not None and sub_elem.text else default
+        except:
             return default
-        
-        found = element.find(f'.//{path}')
-        return found.text if found is not None and found.text else default
     
     def _get_decimal(self, path: str, default: float = 0.0) -> float:
-        """Busca valor decimal"""
+        """Extrai valor decimal"""
         text = self._get_text(path)
         try:
             return float(text) if text else default
-        except ValueError:
+        except (ValueError, TypeError):
             return default
     
     def _get_decimal_from_element(self, element: ET.Element, path: str, default: float = 0.0) -> float:
-        """Busca valor decimal relativo a um elemento"""
+        """Extrai decimal de sub-elemento"""
         text = self._get_text_from_element(element, path)
         try:
             return float(text) if text else default
-        except ValueError:
+        except (ValueError, TypeError):
             return default
     
     def _find_all(self, tag: str) -> List[ET.Element]:
-        """Busca todos elementos com tag especificada"""
-        if not self.xml_root:
+        """Busca todos elementos com determinada tag"""
+        try:
+            if self.ns:
+                return self.root.findall(f'.//ns:{tag}', self.ns)
+            else:
+                return self.root.findall(f'.//{tag}')
+        except:
             return []
-        
-        # Primeiro tenta sem namespace (mais comum)
-        results = self.xml_root.findall(f'.//{tag}')
-        if results:
-            return results
-        
-        # Se não encontrou, tenta com namespaces
-        for prefix, uri in self.NAMESPACES.items():
-            elements = self.xml_root.findall(f'.//{{{uri}}}{tag}')
-            if elements:
-                return elements
-        
-        return []
     
     @staticmethod
     def _parse_date(date_str: str) -> Optional[str]:
         """
-        Converte data do formato XML para ISO
-        Aceita: 2024-01-15T10:30:00-03:00 ou 2024-01-15
+        Converte string de data para formato padrão
+        
+        Args:
+            date_str: Data em formato ISO ou brasileiro
+            
+        Returns:
+            Data em formato YYYY-MM-DD ou None
         """
         if not date_str:
             return None
         
         try:
-            # Remove timezone se existir
-            date_str = date_str.split('-03:00')[0].split('+')[0].split('T')[0]
-            return date_str
-        except Exception:
-            return date_str
+            # Remove timezone e hora se existir
+            date_str = date_str.split('T')[0].split(' ')[0]
+            
+            # Tenta parsear diferentes formatos
+            for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%Y%m%d']:
+                try:
+                    dt = datetime.strptime(date_str, fmt)
+                    return dt.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+            
+            return date_str  # Retorna original se não conseguir parsear
+            
+        except Exception as e:
+            logger.warning(f"Erro ao parsear data {date_str}: {e}")
+            return None
+
+
+if __name__ == "__main__":
+    """Teste standalone"""
+    print("=== Teste XML Processor ===\n")
+    
+    # Teste com arquivo de exemplo
+    test_file = Path("arquivos/entrados/NFe00120954494003622218027814120519723516936553.xml")
+    
+    if test_file.exists():
+        processor = XMLProcessor()
+        
+        if processor.load_xml(test_file):
+            print(f"✅ XML carregado: {processor.doc_type}\n")
+            
+            data = processor.extract_data()
+            
+            print("Metadados:")
+            print(f"  Chave: {data['metadata'].get('chave_acesso')}")
+            print(f"  Número: {data['metadata'].get('numero')}")
+            print(f"  Data: {data['metadata'].get('data_emissao')}")
+            
+            print("\nEmitente:")
+            print(f"  Nome: {data['emitente'].get('xNome')}")
+            print(f"  CNPJ: {data['emitente'].get('CNPJ')}")
+            
+            print("\nValores:")
+            print(f"  Total NF: R$ {data['valores'].get('vNF', 0):,.2f}")
+            print(f"  Total Impostos: R$ {data['impostos'].get('total', 0):,.2f}")
+            
+            print(f"\nItens: {len(data['itens'])}")
+            
+        else:
+            print("❌ Erro ao carregar XML")
+    else:
+        print(f"❌ Arquivo não encontrado: {test_file}")

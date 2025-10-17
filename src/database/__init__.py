@@ -1,10 +1,11 @@
+# src/database/__init__.py - ARQUIVO COMPLETO CORRIGIDO
+
 """
-Módulo de banco de dados do sistema Fiscalia
-Gerenciamento de dados com SQLite e SQLAlchemy
+Módulo de banco de dados para Fiscalia
 """
 
-from src.database.models import Base, DocParaERP, RegistroResultado
-from src.database.db_manager import DatabaseManager, get_db_manager, initialize_database
+from database.models import Base, DocParaERP, RegistroResultado
+from database.db_manager import DatabaseManager, get_db_manager, initialize_database
 
 __all__ = [
     'Base',
@@ -12,5 +13,5 @@ __all__ = [
     'RegistroResultado',
     'DatabaseManager',
     'get_db_manager',
-    'initialize_database',
+    'initialize_database'
 ]

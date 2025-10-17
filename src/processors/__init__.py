@@ -1,18 +1,17 @@
+# src/processors/__init__.py - ARQUIVO COMPLETO CORRIGIDO
+
 """
-Módulo de processadores de Notas Fiscais
-Extração, validação e gerenciamento de arquivos
+Módulo de processadores de documentos fiscais
 """
 
-from src.processors.xml_processor import XMLProcessor
-from src.processors.validator import NFValidator, ValidationError
-from src.processors.file_handler import FileHandler
-from src.processors.nfe_processor import NFeProcessor, ProcessingResult
+from processors.xml_processor import XMLProcessor
+from processors.validator import NFValidator
+from processors.file_handler import FileHandler
+from processors.nfe_processor import NFeProcessor
 
 __all__ = [
     'XMLProcessor',
     'NFValidator',
-    'ValidationError',
     'FileHandler',
-    'NFeProcessor',
-    'ProcessingResult',
+    'NFeProcessor'
 ]

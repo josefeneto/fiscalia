@@ -1,548 +1,264 @@
+# src/database/db_manager.py - ARQUIVO COMPLETO CORRIGIDO
+
 """
-Gerenciador de banco de dados SQLite para o sistema Fiscalia
-Versão corrigida com métodos para Etapa 3
+Gerenciador do banco de dados SQLite
 """
 
-from contextlib import contextmanager
+import os
 from pathlib import Path
-from typing import List, Optional, Dict, Any
 from datetime import datetime
-
+from typing import List, Optional
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 
-from src.database.models import Base, DocParaERP, RegistroResultado
-from src.utils.config import get_settings
-from src.utils.logger import get_logger
+from database.models import Base, DocParaERP, RegistroResultado
+from utils.config import get_settings
+from utils.logger import setup_logger
 
-logger = get_logger(__name__)
+logger = setup_logger(__name__)
 
 
 class DatabaseManager:
     """Gerenciador do banco de dados SQLite"""
     
-    def __init__(self, db_path: Optional[Path] = None):
-        """
-        Inicializa o gerenciador de banco de dados
-        
-        Args:
-            db_path: Caminho customizado para o banco (opcional)
-        """
-        self.settings = get_settings()
-        
-        # Define caminho do banco
-        if db_path:
-            self.db_path = Path(db_path)
-        else:
-            self.db_path = Path(self.settings.SQLITE_DB_PATH)
-        
-        # Garante que diretório existe
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Cria engine e sessão
-        self.engine = None
-        self.SessionLocal = None
-        
-        self._initialize_database()
+    _instance = None
+    _engine = None
+    _SessionLocal = None
     
-    def _initialize_database(self):
-        """Inicializa conexão com banco de dados e cria tabelas"""
-        try:
-            # URL do banco
-            db_url = f"sqlite:///{self.db_path}"
+    def __new__(cls):
+        """Singleton pattern"""
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance._initialize()
+        return cls._instance
+    
+    def _initialize(self):
+        """Inicializa conexão com banco de dados"""
+        if self._engine is None:
+            settings = get_settings()
+            db_path = Path(settings.database_path)
             
-            # Cria engine
-            self.engine = create_engine(
-                db_url,
+            # Criar diretório se não existir
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Criar engine
+            database_url = f"sqlite:///{db_path}"
+            self._engine = create_engine(
+                database_url,
                 echo=False,
                 connect_args={"check_same_thread": False}
             )
             
-            # Cria sessionmaker
-            self.SessionLocal = sessionmaker(
+            # Criar tabelas
+            Base.metadata.create_all(bind=self._engine)
+            
+            # Criar SessionLocal
+            self._SessionLocal = sessionmaker(
                 autocommit=False,
                 autoflush=False,
-                bind=self.engine,
-                expire_on_commit=False  # IMPORTANTE: mantém objetos acessíveis após commit
+                bind=self._engine
             )
             
-            # Cria todas as tabelas
-            Base.metadata.create_all(bind=self.engine)
-            
-            logger.info(f"SQLite database inicializado: {self.db_path}")
-            logger.info("Tabelas do banco de dados criadas/verificadas com sucesso")
-            
-        except Exception as e:
-            logger.error(f"Erro ao inicializar banco de dados: {e}")
-            raise
+            logger.info(f"Database inicializado: {db_path}")
     
-    @contextmanager
-    def _get_session(self) -> Session:
-        """
-        Context manager para sessões do banco
-        
-        Yields:
-            Session do SQLAlchemy
-        """
-        session = self.SessionLocal()
-        try:
-            yield session
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Erro na sessão do banco: {e}")
-            raise
-        finally:
-            session.close()
+    def get_session(self) -> Session:
+        """Retorna uma nova sessão do banco de dados"""
+        return self._SessionLocal()
     
-    # ========================================================================
-    # OPERAÇÕES: DocParaERP
-    # ========================================================================
-    
-    def add_doc_para_erp(self, doc_data: dict) -> DocParaERP:
+    def add_documento(self, doc_data: dict) -> Optional[int]:
         """
-        Adiciona documento para processamento ERP
+        Adiciona documento à tabela docs_para_erp
         
         Args:
             doc_data: Dicionário com dados do documento
             
         Returns:
-            Objeto DocParaERP criado
+            ID do documento inserido ou None se erro
         """
-        doc = DocParaERP(**doc_data)
-        
-        with self._get_session() as session:
+        session = self.get_session()
+        try:
+            doc = DocParaERP(**doc_data)
             session.add(doc)
             session.commit()
             session.refresh(doc)
-            
-            logger.info(f"Documento adicionado: {doc.numero} - {doc.emitente_razao_social}")
-            return doc
+            logger.info(f"Documento adicionado: Número {doc.numero_nf}")
+            return doc.id
+        except IntegrityError as e:
+            session.rollback()
+            logger.error(f"Documento duplicado: {e}")
+            return None
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Erro ao adicionar documento: {e}")
+            return None
+        finally:
+            session.close()
     
-    def get_doc_para_erp_by_id(self, doc_id: int) -> Optional[DocParaERP]:
+    def add_resultado(self, resultado_data: dict) -> Optional[int]:
         """
-        Busca documento por ID
+        Adiciona resultado de processamento
         
         Args:
-            doc_id: ID do documento
+            resultado_data: Dicionário com dados do resultado
             
         Returns:
-            Objeto DocParaERP ou None
+            ID do resultado inserido ou None se erro
         """
-        with self._get_session() as session:
-            doc = session.query(DocParaERP).filter(DocParaERP.id == doc_id).first()
-            return doc
+        session = self.get_session()
+        try:
+            resultado = RegistroResultado(**resultado_data)
+            session.add(resultado)
+            session.commit()
+            session.refresh(resultado)
+            logger.info(f"Resultado registrado: {resultado.resultado}")
+            return resultado.id
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Erro ao registrar resultado: {e}")
+            return None
+        finally:
+            session.close()
     
-    def get_doc_para_erp_by_chave(self, chave_acesso: str) -> Optional[DocParaERP]:
+    def check_documento_existe(self, chave_acesso: str) -> bool:
+        """
+        Verifica se documento já existe no banco
+        
+        Args:
+            chave_acesso: Chave de acesso da nota fiscal
+            
+        Returns:
+            True se existe, False caso contrário
+        """
+        session = self.get_session()
+        try:
+            existe = session.query(DocParaERP).filter(
+                DocParaERP.chave_acesso == chave_acesso
+            ).first() is not None
+            return existe
+        finally:
+            session.close()
+    
+    def get_documento_by_chave(self, chave_acesso: str) -> Optional[DocParaERP]:
         """
         Busca documento por chave de acesso
         
         Args:
-            chave_acesso: Chave de acesso da NFe
+            chave_acesso: Chave de acesso da nota fiscal
             
         Returns:
             Objeto DocParaERP ou None
         """
-        with self._get_session() as session:
-            doc = session.query(DocParaERP).filter(
+        session = self.get_session()
+        try:
+            return session.query(DocParaERP).filter(
                 DocParaERP.chave_acesso == chave_acesso
             ).first()
-            return doc
+        finally:
+            session.close()
     
-    def get_all_docs_para_erp(self, limit: Optional[int] = None) -> List[DocParaERP]:
+    def get_recent_documents(self, limit: int = 10) -> List[DocParaERP]:
         """
-        Retorna todos os documentos
+        Retorna documentos mais recentes
         
         Args:
-            limit: Limite de registros (opcional)
+            limit: Número máximo de documentos
             
         Returns:
-            Lista de DocParaERP
+            Lista de objetos DocParaERP
         """
-        with self._get_session() as session:
-            query = session.query(DocParaERP).order_by(DocParaERP.data_emissao.desc())
-            
-            if limit:
-                query = query.limit(limit)
-            
-            docs = query.all()
-            return docs
+        session = self.get_session()
+        try:
+            return session.query(DocParaERP).order_by(
+                DocParaERP.time_stamp.desc()
+            ).limit(limit).all()
+        finally:
+            session.close()
     
-    def get_docs_pendentes_erp(self) -> List[DocParaERP]:
+    def get_recent_results(self, limit: int = 10) -> List[RegistroResultado]:
         """
-        Retorna documentos ainda não processados no ERP
-        
-        Returns:
-            Lista de DocParaERP pendentes
-        """
-        with self._get_session() as session:
-            docs = session.query(DocParaERP).filter(
-                DocParaERP.erp_processado == 'No'
-            ).order_by(DocParaERP.data_emissao).all()
-            
-            return docs
-    
-    def update_doc_erp_processado(self, doc_id: int) -> bool:
-        """
-        Marca documento como processado no ERP
+        Retorna resultados mais recentes
         
         Args:
-            doc_id: ID do documento
+            limit: Número máximo de resultados
             
         Returns:
-            True se atualizado com sucesso
+            Lista de objetos RegistroResultado
         """
-        with self._get_session() as session:
-            doc = session.query(DocParaERP).filter(DocParaERP.id == doc_id).first()
-            
-            if doc:
-                doc.erp_processado = 'Yes'
-                session.commit()
-                logger.info(f"Documento {doc_id} marcado como processado no ERP")
-                return True
-            
-            return False
+        session = self.get_session()
+        try:
+            return session.query(RegistroResultado).order_by(
+                RegistroResultado.time_stamp.desc()
+            ).limit(limit).all()
+        finally:
+            session.close()
     
-    def delete_doc_para_erp(self, doc_id: int) -> bool:
-        """
-        Remove documento (use com cuidado!)
-        
-        Args:
-            doc_id: ID do documento
-            
-        Returns:
-            True se removido com sucesso
-        """
-        with self._get_session() as session:
-            doc = session.query(DocParaERP).filter(DocParaERP.id == doc_id).first()
-            
-            if doc:
-                session.delete(doc)
-                session.commit()
-                logger.warning(f"Documento {doc_id} removido do banco")
-                return True
-            
-            return False
+    def count_documents(self) -> int:
+        """Retorna número total de documentos"""
+        session = self.get_session()
+        try:
+            return session.query(DocParaERP).count()
+        finally:
+            session.close()
     
-    def check_duplicate_by_hash(self, arquivo_hash: str) -> bool:
-        """
-        Verifica se arquivo já foi processado pelo hash
-        
-        Args:
-            arquivo_hash: Hash MD5 do arquivo
-            
-        Returns:
-            True se já existe, False caso contrário
-        """
-        with self._get_session() as session:
-            exists = session.query(DocParaERP).filter(
-                DocParaERP.arquivo_hash == arquivo_hash
-            ).first() is not None
-            
-            return exists
+    def count_results(self) -> int:
+        """Retorna número total de resultados"""
+        session = self.get_session()
+        try:
+            return session.query(RegistroResultado).count()
+        finally:
+            session.close()
     
-    # ========================================================================
-    # OPERAÇÕES: RegistroResultado
-    # ========================================================================
-    
-    def add_registro_resultado(
-        self, 
-        arquivo_path: str,
-        arquivo_hash: str,
-        resultado: str,
-        causa: str
-    ) -> RegistroResultado:
-        """
-        Adiciona registro de resultado de processamento
-        
-        Args:
-            arquivo_path: Caminho do arquivo
-            arquivo_hash: Hash MD5 do arquivo
-            resultado: "Sucesso" ou "Insucesso"
-            causa: Descrição do resultado
-            
-        Returns:
-            Objeto RegistroResultado criado
-        """
-        registro = RegistroResultado(
-            arquivo_path=arquivo_path,
-            arquivo_hash=arquivo_hash,
-            resultado=resultado,
-            causa=causa
-        )
-        
-        with self._get_session() as session:
-            session.add(registro)
-            session.commit()
-            session.refresh(registro)
-            
-            logger.info(f"Registro de resultado adicionado: {resultado}")
-            return registro
-    
-    def get_registro_resultado_by_id(self, registro_id: int) -> Optional[RegistroResultado]:
-        """
-        Busca registro por ID
-        
-        Args:
-            registro_id: ID do registro
-            
-        Returns:
-            Objeto RegistroResultado ou None
-        """
-        with self._get_session() as session:
-            registro = session.query(RegistroResultado).filter(
-                RegistroResultado.id == registro_id
-            ).first()
-            return registro
-    
-    def get_all_registros_resultado(self, limit: Optional[int] = None) -> List[RegistroResultado]:
-        """
-        Retorna todos os registros de resultado
-        
-        Args:
-            limit: Limite de registros (opcional)
-            
-        Returns:
-            Lista de RegistroResultado
-        """
-        with self._get_session() as session:
-            query = session.query(RegistroResultado).order_by(
-                RegistroResultado.timestamp.desc()
-            )
-            
-            if limit:
-                query = query.limit(limit)
-            
-            registros = query.all()
-            return registros
-    
-    def get_registros_por_resultado(self, resultado: str) -> List[RegistroResultado]:
-        """
-        Busca registros por resultado (Sucesso/Insucesso)
-        
-        Args:
-            resultado: "Sucesso" ou "Insucesso"
-            
-        Returns:
-            Lista de RegistroResultado
-        """
-        with self._get_session() as session:
-            registros = session.query(RegistroResultado).filter(
-                RegistroResultado.resultado == resultado
-            ).order_by(RegistroResultado.timestamp.desc()).all()
-            
-            return registros
-    
-    def delete_registro_resultado(self, registro_id: int) -> bool:
-        """
-        Remove registro (use com cuidado!)
-        
-        Args:
-            registro_id: ID do registro
-            
-        Returns:
-            True se removido com sucesso
-        """
-        with self._get_session() as session:
-            registro = session.query(RegistroResultado).filter(
-                RegistroResultado.id == registro_id
-            ).first()
-            
-            if registro:
-                session.delete(registro)
-                session.commit()
-                logger.warning(f"Registro {registro_id} removido do banco")
-                return True
-            
-            return False
-    
-    # ========================================================================
-    # ESTATÍSTICAS E CONSULTAS
-    # ========================================================================
-    
-    def get_statistics(self) -> Dict[str, Any]:
+    def get_statistics(self) -> dict:
         """
         Retorna estatísticas do banco de dados
         
         Returns:
             Dicionário com estatísticas
         """
-        with self._get_session() as session:
-            # Contagem de documentos
-            total_docs = session.query(DocParaERP).count()
-            docs_processados_erp = session.query(DocParaERP).filter(
-                DocParaERP.erp_processado == 'Yes'
-            ).count()
-            docs_pendentes_erp = total_docs - docs_processados_erp
-            
-            # Contagem de registros de resultado
-            total_registros = session.query(RegistroResultado).count()
-            sucesso = session.query(RegistroResultado).filter(
-                RegistroResultado.resultado == 'Sucesso'
-            ).count()
-            insucesso = session.query(RegistroResultado).filter(
-                RegistroResultado.resultado == 'Insucesso'
-            ).count()
-            
-            # Valores totais (opcional - pode ser lento com muitos registros)
-            soma_valores = session.query(
-                func.sum(DocParaERP.valor_total)
-            ).scalar() or 0.0
-            
-            return {
-                'total_docs_para_erp': total_docs,
-                'docs_processados_erp': docs_processados_erp,
-                'docs_pendentes_erp': docs_pendentes_erp,
-                'total_registros_resultado': total_registros,
-                'sucesso': sucesso,
-                'insucesso': insucesso,
-                'soma_valores_total': float(soma_valores)
-            }
-    
-    def get_docs_por_periodo(
-        self, 
-        data_inicio: str, 
-        data_fim: str
-    ) -> List[DocParaERP]:
-        """
-        Busca documentos por período
-        
-        Args:
-            data_inicio: Data início (YYYY-MM-DD)
-            data_fim: Data fim (YYYY-MM-DD)
-            
-        Returns:
-            Lista de DocParaERP
-        """
-        with self._get_session() as session:
-            docs = session.query(DocParaERP).filter(
-                DocParaERP.data_emissao >= data_inicio,
-                DocParaERP.data_emissao <= data_fim
-            ).order_by(DocParaERP.data_emissao).all()
-            
-            return docs
-    
-    def get_docs_por_emitente(self, cnpj_emitente: str) -> List[DocParaERP]:
-        """
-        Busca documentos por CNPJ do emitente
-        
-        Args:
-            cnpj_emitente: CNPJ do emitente
-            
-        Returns:
-            Lista de DocParaERP
-        """
-        with self._get_session() as session:
-            docs = session.query(DocParaERP).filter(
-                DocParaERP.emitente_cnpj == cnpj_emitente
-            ).order_by(DocParaERP.data_emissao.desc()).all()
-            
-            return docs
-    
-    # ========================================================================
-    # UTILIDADES
-    # ========================================================================
-    
-    def clear_all_data(self) -> bool:
-        """
-        CUIDADO: Remove TODOS os dados do banco (mantém estrutura)
-        
-        Returns:
-            True se executado com sucesso
-        """
+        session = self.get_session()
         try:
-            with self._get_session() as session:
-                session.query(DocParaERP).delete()
-                session.query(RegistroResultado).delete()
-                session.commit()
-                
-                logger.warning("TODOS os dados foram removidos do banco!")
-                return True
-                
-        except Exception as e:
-            logger.error(f"Erro ao limpar dados: {e}")
-            return False
-    
-    def backup_database(self, backup_path: Path) -> bool:
-        """
-        Cria backup do banco de dados
-        
-        Args:
-            backup_path: Caminho para o arquivo de backup
-            
-        Returns:
-            True se backup criado com sucesso
-        """
-        try:
-            import shutil
-            
-            backup_path = Path(backup_path)
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            shutil.copy2(self.db_path, backup_path)
-            
-            logger.info(f"Backup criado: {backup_path}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Erro ao criar backup: {e}")
-            return False
-    
-    def get_table_info(self) -> Dict[str, int]:
-        """
-        Retorna informações sobre as tabelas
-        
-        Returns:
-            Dicionário com contagem de registros por tabela
-        """
-        with self._get_session() as session:
-            return {
-                'docs_para_erp': session.query(DocParaERP).count(),
-                'registros_resultado': session.query(RegistroResultado).count()
+            stats = {
+                'total_documentos': session.query(DocParaERP).count(),
+                'total_resultados': session.query(RegistroResultado).count(),
+                'valor_total': session.query(
+                    func.sum(DocParaERP.valor_total)
+                ).scalar() or 0.0,
+                'documentos_processados_erp': session.query(DocParaERP).filter(
+                    DocParaERP.erp_processado == 'Yes'
+                ).count(),
+                'documentos_pendentes_erp': session.query(DocParaERP).filter(
+                    DocParaERP.erp_processado == 'No'
+                ).count(),
             }
-    
-    def close(self):
-        """Fecha conexão com banco de dados"""
-        if self.engine:
-            self.engine.dispose()
-            logger.info("Conexão com banco de dados fechada")
-    
-    def __repr__(self) -> str:
-        """Representação em string"""
-        return f"DatabaseManager(db_path='{self.db_path}')"
-    
-    def __enter__(self):
-        """Context manager entry"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
-        self.close()
+            return stats
+        finally:
+            session.close()
 
 
-# ========================================================================
-# FUNÇÕES AUXILIARES
-# ========================================================================
+# Instância global (singleton)
+_db_manager = None
+
 
 def get_db_manager() -> DatabaseManager:
-    """
-    Factory function para obter instância do DatabaseManager
-    
-    Returns:
-        Instância de DatabaseManager
-    """
-    return DatabaseManager()
+    """Retorna instância global do DatabaseManager"""
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = DatabaseManager()
+    return _db_manager
 
 
-def initialize_database(db_path: Optional[Path] = None) -> DatabaseManager:
-    """
-    Inicializa banco de dados (alias para get_db_manager)
-    
-    Args:
-        db_path: Caminho customizado para o banco (opcional)
-        
-    Returns:
-        Instância de DatabaseManager
-    """
-    return DatabaseManager(db_path=db_path)
+def initialize_database():
+    """Inicializa o banco de dados (cria tabelas se necessário)"""
+    db = get_db_manager()
+    logger.info("Database inicializado com sucesso")
+    return db
+
+
+if __name__ == "__main__":
+    # Teste básico
+    print("Testando DatabaseManager...")
+    db = initialize_database()
+    print(f"Total de documentos: {db.count_documents()}")
+    print(f"Total de resultados: {db.count_results()}")
+    print("✅ DatabaseManager funcionando!")

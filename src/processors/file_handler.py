@@ -9,9 +9,10 @@ from typing import Optional, Tuple
 from datetime import datetime
 import hashlib
 
-from src.utils.logger import get_logger
+from utils.config import get_settings
+from utils.logger import setup_logger
 
-logger = get_logger(__name__)
+logger = setup_logger(__name__)
 
 
 class FileHandler:

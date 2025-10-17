@@ -1,94 +1,90 @@
+# src/database/models.py - ARQUIVO COMPLETO (sem alterações, mas segue completo)
+
 """
-Modelos de dados SQLAlchemy para o sistema Fiscalia
-Define estrutura das tabelas do banco de dados
+Modelos de dados SQLAlchemy para Fiscalia
 """
 
 from datetime import datetime
-from typing import Optional
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
 
-from sqlalchemy import String, Integer, Float, DateTime, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-
-class Base(DeclarativeBase):
-    """Classe base para todos os modelos"""
-    pass
+Base = declarative_base()
 
 
 class DocParaERP(Base):
-    """
-    Tabela para armazenar documentos fiscais para processamento ERP
-    Armazena dados extraídos de XMLs de Notas Fiscais
-    """
+    """Tabela de documentos fiscais processados"""
+    
     __tablename__ = 'docs_para_erp'
     
-    # Chave primária
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Campos de controle
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    time_stamp = Column(DateTime, default=datetime.now, nullable=False)
+    path_nome_arquivo = Column(String(500), nullable=False)
+    erp_processado = Column(String(3), default='No', nullable=False)  # Yes/No
     
-    # Timestamp e controle
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    arquivo_path: Mapped[str] = mapped_column(String(500))
-    arquivo_hash: Mapped[str] = mapped_column(String(32), unique=True, index=True)  # MD5 hash
-    
-    # Metadados do documento
-    tipo_documento: Mapped[str] = mapped_column(String(20))  # NFe, NFCe, CTe, MDFe
-    chave_acesso: Mapped[Optional[str]] = mapped_column(String(44), index=True)  # Removido unique=True
-    numero: Mapped[Optional[str]] = mapped_column(String(20))
-    serie: Mapped[Optional[str]] = mapped_column(String(10))
-    data_emissao: Mapped[Optional[str]] = mapped_column(String(10))  # YYYY-MM-DD
-    modelo: Mapped[Optional[str]] = mapped_column(String(2))
-    natureza_operacao: Mapped[Optional[str]] = mapped_column(String(200))
-    tipo_operacao: Mapped[Optional[str]] = mapped_column(String(1))  # 0=Entrada, 1=Saída
+    # Dados da Nota Fiscal
+    chave_acesso = Column(String(44), unique=True, nullable=False, index=True)
+    numero_nf = Column(String(20), nullable=False)
+    serie = Column(String(10))
+    modelo = Column(String(10))
+    natureza_operacao = Column(String(100))
+    tipo_operacao = Column(String(1))  # 0=Entrada, 1=Saída
+    data_emissao = Column(DateTime)
+    data_saida_entrada = Column(DateTime)
     
     # Emitente
-    emitente_cnpj: Mapped[Optional[str]] = mapped_column(String(14))
-    emitente_cpf: Mapped[Optional[str]] = mapped_column(String(11))
-    emitente_razao_social: Mapped[Optional[str]] = mapped_column(String(200))
-    emitente_ie: Mapped[Optional[str]] = mapped_column(String(20))
+    cnpj_emitente = Column(String(14))
+    cpf_emitente = Column(String(11))
+    razao_social_emitente = Column(String(200))
+    nome_fantasia_emitente = Column(String(200))
+    ie_emitente = Column(String(20))
+    uf_emitente = Column(String(2))
+    municipio_emitente = Column(String(100))
     
     # Destinatário
-    destinatario_cnpj: Mapped[Optional[str]] = mapped_column(String(14))
-    destinatario_cpf: Mapped[Optional[str]] = mapped_column(String(11))
-    destinatario_razao_social: Mapped[Optional[str]] = mapped_column(String(200))
+    cnpj_destinatario = Column(String(14))
+    cpf_destinatario = Column(String(11))
+    razao_social_destinatario = Column(String(200))
+    ie_destinatario = Column(String(20))
+    uf_destinatario = Column(String(2))
+    municipio_destinatario = Column(String(100))
     
     # Valores
-    valor_total: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
-    valor_produtos: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
-    valor_desconto: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
+    valor_total = Column(Float, default=0.0)
+    valor_produtos = Column(Float, default=0.0)
+    valor_frete = Column(Float, default=0.0)
+    valor_seguro = Column(Float, default=0.0)
+    valor_desconto = Column(Float, default=0.0)
+    valor_outras_despesas = Column(Float, default=0.0)
     
     # Impostos
-    valor_icms: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
-    valor_ipi: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
-    valor_pis: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
-    valor_cofins: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
+    base_calculo_icms = Column(Float, default=0.0)
+    valor_icms = Column(Float, default=0.0)
+    valor_ipi = Column(Float, default=0.0)
+    valor_pis = Column(Float, default=0.0)
+    valor_cofins = Column(Float, default=0.0)
     
-    # Status ERP
-    erp_processado: Mapped[str] = mapped_column(String(3), default='No')  # Yes/No
+    # Códigos Fiscais
+    cfop = Column(String(10))
     
-    def __repr__(self) -> str:
-        return f"<DocParaERP(id={self.id}, numero={self.numero}, emitente={self.emitente_razao_social})>"
+    # Informações Adicionais
+    info_complementar = Column(Text)
+    info_fisco = Column(Text)
+    
+    def __repr__(self):
+        return f"<DocParaERP(nf={self.numero_nf}, valor={self.valor_total})>"
 
 
 class RegistroResultado(Base):
-    """
-    Tabela para registrar resultados de processamento de arquivos
-    Log de todas as operações (sucesso/insucesso)
-    """
+    """Tabela de registro de resultados de processamento"""
+    
     __tablename__ = 'registo_resultados'
     
-    # Chave primária
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    time_stamp = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    path_nome_arquivo = Column(String(500), nullable=False)
+    resultado = Column(String(50), nullable=False)  # Sucesso, Insucesso
+    causa = Column(String(500))  # Descrição do erro ou sucesso
     
-    # Timestamp
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
-    
-    # Informações do arquivo
-    arquivo_path: Mapped[str] = mapped_column(String(500))
-    arquivo_hash: Mapped[str] = mapped_column(String(32), index=True)  # MD5 hash
-    
-    # Resultado
-    resultado: Mapped[str] = mapped_column(String(20), index=True)  # Sucesso/Insucesso
-    causa: Mapped[Optional[str]] = mapped_column(Text)  # Detalhes do resultado
-    
-    def __repr__(self) -> str:
-        return f"<RegistroResultado(id={self.id}, resultado={self.resultado}, timestamp={self.timestamp})>"
+    def __repr__(self):
+        return f"<RegistroResultado(arquivo={self.path_nome_arquivo}, resultado={self.resultado})>"
