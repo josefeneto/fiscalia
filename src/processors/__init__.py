@@ -4,10 +4,10 @@
 Módulo de processadores de documentos fiscais
 """
 
-from processors.xml_processor import XMLProcessor
-from processors.validator import NFValidator
-from processors.file_handler import FileHandler
-from processors.nfe_processor import NFeProcessor
+from .xml_processor import XMLProcessor
+from .validator import NFValidator
+from .file_handler import FileHandler
+from .nfe_processor import NFeProcessor
 
 __all__ = [
     'XMLProcessor',

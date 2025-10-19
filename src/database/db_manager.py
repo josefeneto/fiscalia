@@ -12,9 +12,9 @@ from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
 
-from database.models import Base, DocParaERP, RegistroResultado
-from utils.config import get_settings
-from utils.logger import setup_logger
+from .models import Base, DocParaERP, RegistroResultado
+from ..utils.config import get_settings
+from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 

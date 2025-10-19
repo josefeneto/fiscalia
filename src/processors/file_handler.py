@@ -1,289 +1,177 @@
 """
-Gerenciador de Arquivos de Notas Fiscais
-Move arquivos entre pastas, calcula hash, verifica duplicados
+File Handler - Movimentação e Gestão de Arquivos
+USA BANCO DE DADOS com query EXATA
 """
 
 import shutil
 from pathlib import Path
-from typing import Optional, Tuple
-from datetime import datetime
-import hashlib
+import os
 
-from utils.config import get_settings
-from utils.logger import setup_logger
+from src.utils.logger import setup_logger
+from src.utils.config import get_settings
 
 logger = setup_logger(__name__)
 
 
 class FileHandler:
-    """Gerenciador de arquivos do sistema"""
+    """Gerenciador de movimentação de arquivos"""
     
-    # Extensões suportadas
-    SUPPORTED_EXTENSIONS = {'.xml', '.pdf', '.png', '.jpg', '.jpeg'}
-    
-    def __init__(self, base_path: Optional[Path] = None):
+    def __init__(self, db_manager=None):
         """
-        Inicializa o gerenciador de arquivos
+        Inicializa o File Handler
         
         Args:
-            base_path: Caminho base (padrão: arquivos/)
+            db_manager: Instância do DatabaseManager (opcional)
         """
-        if base_path is None:
-            base_path = Path('arquivos')
+        self.settings = get_settings()
+        self.pasta_entrados = Path(self.settings.pasta_entrados)
+        self.pasta_processados = Path(self.settings.pasta_processados)
+        self.pasta_rejeitados = Path(self.settings.pasta_rejeitados)
         
-        self.base_path = Path(base_path)
-        self.entrados_path = self.base_path / 'entrados'
-        self.processados_path = self.base_path / 'processados'
-        self.rejeitados_path = self.base_path / 'rejeitados'
+        self.db = db_manager
         
-        # Cria estrutura de pastas se não existir
-        self._ensure_folders()
+        logger.info("FileHandler inicializado")
     
-    def _ensure_folders(self):
-        """Garante que as pastas necessárias existem"""
-        for folder in [self.entrados_path, self.processados_path, self.rejeitados_path]:
-            folder.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"Pasta verificada: {folder}")
+    def set_db_manager(self, db_manager):
+        """Define o DatabaseManager"""
+        self.db = db_manager
     
-    def set_base_path(self, new_path: Path):
+    def _arquivo_ja_processado(self, nome_arquivo: str) -> bool:
         """
-        Altera o caminho base das pastas
-        
-        Args:
-            new_path: Novo caminho base
+        Verifica se arquivo já foi processado no BANCO DE DADOS
+        Busca EXATA pelo nome do arquivo
         """
-        self.base_path = Path(new_path)
-        self.entrados_path = self.base_path / 'entrados'
-        self.processados_path = self.base_path / 'processados'
-        self.rejeitados_path = self.base_path / 'rejeitados'
-        self._ensure_folders()
-        logger.info(f"Caminho base alterado para: {new_path}")
-    
-    def get_pending_files(self) -> list[Path]:
-        """
-        Lista arquivos pendentes na pasta entrados/
-        
-        Returns:
-            Lista de Path com arquivos pendentes
-        """
-        files = []
-        for ext in self.SUPPORTED_EXTENSIONS:
-            files.extend(self.entrados_path.glob(f'*{ext}'))
-        
-        logger.info(f"Encontrados {len(files)} arquivo(s) pendente(s)")
-        return sorted(files)
-    
-    def is_supported_file(self, file_path: Path) -> bool:
-        """
-        Verifica se arquivo tem extensão suportada
-        
-        Args:
-            file_path: Caminho do arquivo
-            
-        Returns:
-            True se extensão suportada
-        """
-        return file_path.suffix.lower() in self.SUPPORTED_EXTENSIONS
-    
-    def get_file_type(self, file_path: Path) -> str:
-        """
-        Identifica tipo do arquivo pela extensão
-        
-        Args:
-            file_path: Caminho do arquivo
-            
-        Returns:
-            Tipo: 'xml', 'pdf', 'imagem', 'desconhecido'
-        """
-        ext = file_path.suffix.lower()
-        
-        if ext == '.xml':
-            return 'xml'
-        elif ext == '.pdf':
-            return 'pdf'
-        elif ext in {'.png', '.jpg', '.jpeg'}:
-            return 'imagem'
-        else:
-            return 'desconhecido'
-    
-    def calculate_hash(self, file_path: Path) -> str:
-        """
-        Calcula hash MD5 do arquivo
-        
-        Args:
-            file_path: Caminho do arquivo
-            
-        Returns:
-            Hash MD5 em hexadecimal
-        """
-        if not file_path.exists():
-            logger.error(f"Arquivo não encontrado: {file_path}")
-            return ""
+        if not self.db:
+            logger.warning("DatabaseManager não configurado")
+            return False
         
         try:
-            md5_hash = hashlib.md5()
-            with open(file_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    md5_hash.update(chunk)
+            from src.database.models import RegistroResultado
             
-            hash_value = md5_hash.hexdigest()
-            logger.debug(f"Hash calculado para {file_path.name}: {hash_value}")
-            return hash_value
-            
-        except Exception as e:
-            logger.error(f"Erro ao calcular hash de {file_path.name}: {e}")
-            return ""
-    
-    def move_to_processed(self, file_path: Path) -> Tuple[bool, Optional[Path]]:
-        """
-        Move arquivo para pasta processados/
-        
-        Args:
-            file_path: Caminho do arquivo
-            
-        Returns:
-            Tupla (sucesso, novo_path)
-        """
-        return self._move_file(file_path, self.processados_path)
-    
-    def move_to_rejected(self, file_path: Path) -> Tuple[bool, Optional[Path]]:
-        """
-        Move arquivo para pasta rejeitados/
-        
-        Args:
-            file_path: Caminho do arquivo
-            
-        Returns:
-            Tupla (sucesso, novo_path)
-        """
-        return self._move_file(file_path, self.rejeitados_path)
-    
-    def _move_file(self, file_path: Path, destination_folder: Path) -> Tuple[bool, Optional[Path]]:
-        """
-        Move arquivo para pasta de destino, evitando sobrescrever
-        
-        Args:
-            file_path: Arquivo origem
-            destination_folder: Pasta destino
-            
-        Returns:
-            Tupla (sucesso, novo_path)
-        """
-        if not file_path.exists():
-            logger.error(f"Arquivo não encontrado: {file_path}")
-            return False, None
-        
-        try:
-            # Garante que pasta destino existe
-            destination_folder.mkdir(parents=True, exist_ok=True)
-            
-            # Nome destino com timestamp se já existir
-            dest_path = destination_folder / file_path.name
-            
-            if dest_path.exists():
-                # Adiciona timestamp para evitar sobrescrever
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                stem = file_path.stem
-                suffix = file_path.suffix
-                dest_path = destination_folder / f"{stem}_{timestamp}{suffix}"
-            
-            # Move o arquivo
-            shutil.move(str(file_path), str(dest_path))
-            logger.info(f"Arquivo movido: {file_path.name} → {destination_folder.name}/")
-            
-            return True, dest_path
-            
-        except Exception as e:
-            logger.error(f"Erro ao mover arquivo {file_path.name}: {e}")
-            return False, None
-    
-    def copy_to_entrados(self, source_path: Path) -> Tuple[bool, Optional[Path]]:
-        """
-        Copia arquivo para pasta entrados/ (usado no upload Streamlit)
-        
-        Args:
-            source_path: Arquivo origem
-            
-        Returns:
-            Tupla (sucesso, novo_path)
-        """
-        if not source_path.exists():
-            logger.error(f"Arquivo não encontrado: {source_path}")
-            return False, None
-        
-        try:
-            # Nome destino
-            dest_path = self.entrados_path / source_path.name
-            
-            # Se já existe, adiciona timestamp
-            if dest_path.exists():
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                stem = source_path.stem
-                suffix = source_path.suffix
-                dest_path = self.entrados_path / f"{stem}_{timestamp}{suffix}"
-            
-            # Copia o arquivo
-            shutil.copy2(str(source_path), str(dest_path))
-            logger.info(f"Arquivo copiado para entrados/: {source_path.name}")
-            
-            return True, dest_path
-            
-        except Exception as e:
-            logger.error(f"Erro ao copiar arquivo {source_path.name}: {e}")
-            return False, None
-    
-    def get_stats(self) -> dict:
-        """
-        Retorna estatísticas das pastas
-        
-        Returns:
-            Dicionário com contagem de arquivos
-        """
-        def count_files(folder: Path) -> int:
-            return sum(1 for f in folder.iterdir() if f.is_file())
-        
-        return {
-            'entrados': count_files(self.entrados_path),
-            'processados': count_files(self.processados_path),
-            'rejeitados': count_files(self.rejeitados_path),
-            'base_path': str(self.base_path.absolute())
-        }
-    
-    def validate_file_structure(self, file_path: Path) -> Tuple[bool, str]:
-        """
-        Valida estrutura básica do arquivo
-        
-        Args:
-            file_path: Caminho do arquivo
-            
-        Returns:
-            Tupla (é_válido, mensagem)
-        """
-        if not file_path.exists():
-            return False, "Arquivo não encontrado"
-        
-        if not file_path.is_file():
-            return False, "Caminho não é um arquivo"
-        
-        if file_path.stat().st_size == 0:
-            return False, "Arquivo vazio"
-        
-        if not self.is_supported_file(file_path):
-            return False, f"Extensão não suportada: {file_path.suffix}"
-        
-        # Validação específica por tipo
-        file_type = self.get_file_type(file_path)
-        
-        if file_type == 'xml':
-            # Verifica se é XML válido (básico)
+            session = self.db.get_session()
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read(100)
-                    if not content.strip().startswith('<?xml'):
-                        return False, "Arquivo não parece ser um XML válido"
-            except UnicodeDecodeError:
-                return False, "Arquivo XML com encoding inválido"
-            except Exception as e:
-                return False, f"Erro ao ler arquivo: {str(e)}"
+                # CRÍTICO: Busca por arquivos que TERMINAM com o nome
+                # porque path_nome_arquivo tem o caminho completo
+                existe = session.query(RegistroResultado).filter(
+                    RegistroResultado.path_nome_arquivo.like(f'%{nome_arquivo}')
+                ).first() is not None
+                
+                if existe:
+                    logger.debug(f"Arquivo {nome_arquivo} encontrado no BD")
+                
+                return existe
+            finally:
+                session.close()
+                
+        except Exception as e:
+            logger.error(f"Erro ao verificar arquivo processado: {e}")
+            return False
+    
+    def move_to_processados(self, arquivo_path: Path) -> bool:
+        """Move arquivo para pasta processados"""
+        try:
+            nome_arquivo = arquivo_path.name
+            destino = self.pasta_processados / nome_arquivo
+            
+            if destino.exists():
+                logger.warning(f"Arquivo já existe em /processados - substituindo")
+                os.remove(destino)
+            
+            if not arquivo_path.exists():
+                logger.error(f"Arquivo não existe para mover: {arquivo_path}")
+                return False
+            
+            shutil.move(str(arquivo_path), str(destino))
+            
+            logger.info(f"Arquivo movido: {nome_arquivo} → processados/")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao mover para processados: {e}")
+            return False
+    
+    def move_to_rejeitados(self, arquivo_path: Path, motivo: str = "Validação falhou") -> bool:
+        """Move arquivo para pasta rejeitados"""
+        try:
+            nome_arquivo = arquivo_path.name
+            destino = self.pasta_rejeitados / nome_arquivo
+            
+            if destino.exists():
+                logger.warning(f"Arquivo já existe em /rejeitados - substituindo")
+                os.remove(destino)
+            
+            if not arquivo_path.exists():
+                logger.error(f"Arquivo não existe para mover: {arquivo_path}")
+                return False
+            
+            shutil.move(str(arquivo_path), str(destino))
+            
+            logger.info(f"Arquivo movido: {nome_arquivo} → rejeitados/ (Motivo: {motivo})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao mover para rejeitados: {e}")
+            return False
+    
+    def validar_extensao(self, arquivo_path: Path) -> bool:
+        """Valida se arquivo tem extensão permitida"""
+        extensoes_validas = {'.xml'}
+        extensao = arquivo_path.suffix.lower()
         
-        return True, "Arquivo válido"
+        if extensao not in extensoes_validas:
+            logger.warning(f"Extensão inválida: {extensao} - Arquivo: {arquivo_path.name}")
+            return False
+        
+        return True
+    
+    def processar_arquivo_invalido(self, arquivo_path: Path) -> bool:
+        """Processa arquivo com extensão inválida"""
+        try:
+            nome_arquivo = arquivo_path.name
+            
+            if not arquivo_path.exists():
+                logger.error(f"Arquivo não existe: {arquivo_path}")
+                return False
+            
+            destino = self.pasta_rejeitados / nome_arquivo
+            
+            if destino.exists():
+                logger.warning(f"Arquivo já existe em /rejeitados - substituindo")
+                os.remove(destino)
+            
+            shutil.move(str(arquivo_path), str(destino))
+            logger.info(f"Arquivo movido: {nome_arquivo} → rejeitados/ (Extensão inválida)")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar arquivo inválido: {e}")
+            return False
+    
+    def get_arquivos_entrados(self) -> list[Path]:
+        """
+        Lista TODOS os arquivos na pasta entrados
+        FILTRA usando BANCO DE DADOS
+        """
+        try:
+            # Busca TODOS os arquivos
+            todos_arquivos = [
+                f for f in self.pasta_entrados.iterdir() 
+                if f.is_file() and f.name != '.gitkeep'
+            ]
+            
+            # Filtrar apenas arquivos NÃO processados
+            arquivos_novos = []
+            for arquivo in todos_arquivos:
+                if not self._arquivo_ja_processado(arquivo.name):
+                    arquivos_novos.append(arquivo)
+                else:
+                    logger.info(f"Arquivo {arquivo.name} já foi processado (registro no BD) - SERÁ PROCESSADO NOVAMENTE para garantir registro correto")
+                    # MUDANÇA: Não pula, processa novamente para garantir que vai para rejeitados
+                    arquivos_novos.append(arquivo)
+            
+            return arquivos_novos
+            
+        except Exception as e:
+            logger.error(f"Erro ao listar arquivos entrados: {e}")
+            return []

@@ -1,265 +1,351 @@
-# src/processors/nfe_processor.py - ARQUIVO COMPLETO CORRIGIDO
-
 """
-Processador principal de Notas Fiscais Eletrônicas
-Orquestra extração, validação e armazenamento
+NFe Processor - Processador Principal (VERSÃO FINAL)
+Usa BD para controle de duplicados
 """
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Any
+import hashlib
 from datetime import datetime
 
-from processors.xml_processor import XMLProcessor
-from processors.validator import NFValidator
-from processors.file_handler import FileHandler
-from database.db_manager import DatabaseManager
-from utils.logger import setup_logger
+from src.processors.xml_processor import XMLProcessor
+from src.processors.validator import NFValidator
+from src.processors.file_handler import FileHandler
+from src.database.db_manager import DatabaseManager
+from src.utils.logger import setup_logger
+from src.utils.config import get_settings
 
 logger = setup_logger(__name__)
 
 
 class NFeProcessor:
-    """Processador completo de NFe"""
+    """Processador principal de Notas Fiscais Eletrônicas"""
     
     def __init__(self):
+        """Inicializa o processador"""
         self.xml_processor = XMLProcessor()
         self.validator = NFValidator()
-        self.file_handler = FileHandler()
         self.db = DatabaseManager()
+        self.file_handler = FileHandler()
+        
+        # IMPORTANTE: Injetar DB no FileHandler
+        self.file_handler.set_db_manager(self.db)
+        
+        self.settings = get_settings()
         logger.info("NFeProcessor inicializado")
     
-    def _convert_date(self, date_str: str):
+    def _parse_date_to_datetime(self, date_str: str) -> datetime:
         """Converte string de data para objeto datetime"""
         if not date_str:
             return None
+        
         try:
-            # Formato esperado: YYYY-MM-DD
+            if isinstance(date_str, datetime):
+                return date_str
+            
             return datetime.strptime(date_str, '%Y-%m-%d')
-        except:
+        except Exception as e:
+            logger.warning(f"Erro ao converter data '{date_str}': {e}")
             return None
-
-    def process_file(self, file_path: Path) -> Dict:
-        """
-        Processa arquivo de nota fiscal
     
-        Args:
-            file_path: Caminho do arquivo
-        
-        Returns:
-            Dicionário com resultado do processamento
-        """
-        logger.info(f"Processando arquivo: {file_path.name}")
-    
-        result = {
-            'success': False,
-            'file': str(file_path),
-            'message': '',
-            'data': None
-        }
-    
+    def _calcular_hash(self, arquivo_path: Path) -> str:
+        """Calcula hash MD5 do arquivo"""
         try:
-            # ===== CORREÇÃO 1: VERIFICAR SE ARQUIVO EXISTE =====
-            if not file_path.exists():
-                result['message'] = 'Arquivo não encontrado'
-                logger.error(f"Arquivo não encontrado: {file_path}")
-                self._register_failure(file_path, result['message'])
-                return result
+            with open(arquivo_path, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except Exception as e:
+            logger.error(f"Erro ao calcular hash: {e}")
+            return ""
+    
+    def _verificar_duplicado_antes_salvar(self, conteudo_bytes: bytes) -> tuple[bool, str]:
+        """Verifica se arquivo já existe antes de salvar"""
+        try:
+            hash_arquivo = hashlib.md5(conteudo_bytes).hexdigest()
             
-            # ===== CORREÇÃO 1.5: IGNORAR ARQUIVOS .gitkeep =====
-            if file_path.name == '.gitkeep':
-                logger.info(f"Arquivo .gitkeep ignorado: {file_path.name}")
-                return {
-                    'success': False,
-                    'file': str(file_path),
-                    'message': 'Arquivo .gitkeep ignorado (não processado)',
-                    'skipped': True
-                }
+            temp_dir = Path(self.settings.pasta_base) / "temp"
+            temp_dir.mkdir(exist_ok=True)
             
-            # ===== CORREÇÃO 2: VERIFICAR EXTENSÃO DO ARQUIVO =====
-            file_extension = file_path.suffix.lower()
+            temp_path = temp_dir / f"temp_{hash_arquivo}.xml"
+            temp_path.write_bytes(conteudo_bytes)
             
-            # Se não é XML, rejeitar imediatamente
-            if file_extension != '.xml':
-                # Mensagens específicas por tipo
-                if file_extension == '.pdf':
-                    result['message'] = 'Formato PDF ainda não suportado nesta versão'
-                elif file_extension in ['.png', '.jpg', '.jpeg']:
-                    result['message'] = 'Formato de imagem ainda não suportado nesta versão'
-                elif file_extension in ['.doc', '.docx', '.txt']:
-                    result['message'] = f'Extensão {file_extension} não suportada'
+            try:
+                if self.xml_processor.load_xml(temp_path):
+                    dados = self.xml_processor.extract_data()
+                    chave_acesso = dados.get('metadata', {}).get('chave_acesso', '')
+                    
+                    if chave_acesso and self.db.check_documento_existe(chave_acesso):
+                        logger.warning(f"Arquivo duplicado detectado ANTES de salvar: {chave_acesso}")
+                        return True, chave_acesso
+                    
+                    return False, chave_acesso
                 else:
-                    result['message'] = f'Extensão {file_extension} não é suportada pelo sistema'
+                    return False, ""
                 
-                logger.warning(f"Formato não suportado: {file_path.name} - {result['message']}")
-                self._register_failure(file_path, result['message'])
-                self.file_handler.move_to_rejected(file_path)
-                return result
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink()
+                    
+        except Exception as e:
+            logger.error(f"Erro ao verificar duplicado: {e}")
+            return False, ""
+    
+    def _extrair_dados_do_xml(self, arquivo_path: Path) -> Dict[str, Any]:
+        """Extrai dados do XML e converte para formato do banco"""
+        try:
+            if not self.xml_processor.load_xml(arquivo_path):
+                logger.error(f"Falha ao carregar XML: {arquivo_path.name}")
+                return {}
             
-            # ===== CORREÇÃO 3: VALIDAR ESTRUTURA BÁSICA DO XML =====
-            is_valid_structure, validation_msg = self.file_handler.validate_file_structure(file_path)
+            data = self.xml_processor.extract_data()
             
-            if not is_valid_structure:
-                result['message'] = f'Estrutura inválida: {validation_msg}'
-                logger.warning(f"Arquivo com estrutura inválida: {file_path.name} - {validation_msg}")
-                self._register_failure(file_path, result['message'])
-                self.file_handler.move_to_rejected(file_path)
-                return result
+            if not data:
+                logger.error(f"Falha ao extrair dados do XML: {arquivo_path.name}")
+                return {}
             
-            # ===== PROCESSAMENTO XML (código original) =====
-            # 1. Extrair dados do XML
-            if not self.xml_processor.load_xml(file_path):
-                result['message'] = 'Erro ao carregar XML'
-                self._register_failure(file_path, result['message'])
-                self.file_handler.move_to_rejected(file_path)
-                return result
-        
-            nf_data = self.xml_processor.extract_data()
-        
-            if not nf_data:
-                result['message'] = 'Erro ao extrair dados do XML'
-                self._register_failure(file_path, result['message'])
-                self.file_handler.move_to_rejected(file_path)
-                return result
+            metadata = data.get('metadata', {})
+            emitente = data.get('emitente', {})
+            destinatario = data.get('destinatario', {})
+            valores = data.get('valores', {})
             
-            # 2. Validar dados - TEMPORARIAMENTE DESABILITADO
-            # is_valid = self.validator.validate(nf_data, strict=False)
-            #
-            # if not is_valid:
-                # Pegar relatório de erros do validator
-            #     validation_report = self.validator.get_validation_report()
-            #     errors = validation_report.get('errors', [])
-            #     result['message'] = f'Validação falhou: {"; ".join(errors)}'
-            #     self._register_failure(file_path, result['message'])
-            #    self.file_handler.move_to_rejected(file_path)
-            #     return result
-            # BYPASS COMPLETO - aceitar todos os XMLs
-            logger.info("✅ Validação desabilitada temporariamente")
-
-            # 3. Verificar duplicata
-            chave_acesso = nf_data.get('chave_acesso')
-            if self.db.check_documento_existe(chave_acesso):
-                result['message'] = 'Documento duplicado'
-                self._register_failure(file_path, result['message'])
-                self.file_handler.move_to_rejected(file_path)
-                return result
+            data_emissao_str = metadata.get('data_emissao')
+            data_saida_str = metadata.get('data_saida')
             
-            # 4. Preparar dados para BD
-            doc_data = self._prepare_doc_data(nf_data, file_path)
-            
-            # 5. Salvar no banco de dados
-            doc_id = self.db.add_documento(doc_data)
-            
-            if not doc_id:
-                result['message'] = 'Erro ao salvar no banco de dados'
-                self._register_failure(file_path, result['message'])
-                self.file_handler.move_to_rejected(file_path)
-                return result
-            
-            # 6. Mover arquivo para processados
-            self.file_handler.move_to_processed(file_path)
-            
-            # 7. Registrar sucesso
-            self._register_success(file_path, doc_id)
-            
-            result['success'] = True
-            result['message'] = 'Processado com sucesso'
-            result['data'] = {
-                'doc_id': doc_id,
-                'numero_nf': nf_data.get('numero'),
-                'valor_total': nf_data.get('valor_total', 0.0)
+            dados_db = {
+                'chave_acesso': metadata.get('chave_acesso', ''),
+                'numero_nf': metadata.get('numero', ''),
+                'serie': metadata.get('serie', ''),
+                'modelo': metadata.get('modelo', ''),
+                'natureza_operacao': metadata.get('natureza_operacao', ''),
+                'tipo_operacao': metadata.get('tipo_operacao', ''),
+                'data_emissao': self._parse_date_to_datetime(data_emissao_str),
+                'data_saida_entrada': self._parse_date_to_datetime(data_saida_str),
+                'cnpj_emitente': emitente.get('CNPJ', ''),
+                'cpf_emitente': emitente.get('CPF', ''),
+                'razao_social_emitente': emitente.get('xNome', ''),
+                'nome_fantasia_emitente': emitente.get('xFant', ''),
+                'ie_emitente': emitente.get('IE', ''),
+                'uf_emitente': emitente.get('enderEmit', {}).get('UF', ''),
+                'municipio_emitente': emitente.get('enderEmit', {}).get('xMun', ''),
+                'cnpj_destinatario': destinatario.get('CNPJ', ''),
+                'cpf_destinatario': destinatario.get('CPF', ''),
+                'razao_social_destinatario': destinatario.get('xNome', ''),
+                'ie_destinatario': destinatario.get('IE', ''),
+                'uf_destinatario': destinatario.get('enderDest', {}).get('UF', ''),
+                'municipio_destinatario': destinatario.get('enderDest', {}).get('xMun', ''),
+                'valor_total': valores.get('vNF', 0.0),
+                'valor_produtos': valores.get('vProd', 0.0),
+                'valor_frete': valores.get('vFrete', 0.0),
+                'valor_seguro': valores.get('vSeg', 0.0),
+                'valor_desconto': valores.get('vDesc', 0.0),
+                'valor_outras_despesas': valores.get('vOutro', 0.0),
+                'base_calculo_icms': valores.get('vBC', 0.0),
+                'valor_icms': valores.get('vICMS', 0.0),
+                'valor_ipi': valores.get('vIPI', 0.0),
+                'valor_pis': valores.get('vPIS', 0.0),
+                'valor_cofins': valores.get('vCOFINS', 0.0),
+                'path_nome_arquivo': str(arquivo_path),
+                'erp_processado': 'No',
             }
             
-            logger.info(f"Arquivo processado com sucesso: {file_path.name}")
+            return dados_db
             
         except Exception as e:
-            result['message'] = f'Erro no processamento: {str(e)}'
-            logger.error(f"Erro ao processar {file_path.name}: {e}")
-            self._register_failure(file_path, result['message'])
-            self.file_handler.move_to_rejected(file_path)
-        
-        return result
+            logger.error(f"Erro ao extrair dados do XML {arquivo_path.name}: {e}")
+            return {}
     
-    def _prepare_doc_data(self, nf_data: Dict, file_path: Path) -> Dict:
-        """Prepara dados para inserção no banco"""
+    def process_file(self, arquivo_path: Path) -> Dict[str, Any]:
+        """Processa um arquivo XML de NFe"""
+        try:
+            logger.info(f"Processando arquivo: {arquivo_path.name}")
+            
+            if not arquivo_path.exists():
+                return {
+                    'success': False,
+                    'message': 'Arquivo não encontrado',
+                    'file': str(arquivo_path)
+                }
+            
+            # Validar extensão
+            if not self.file_handler.validar_extensao(arquivo_path):
+                self.file_handler.processar_arquivo_invalido(arquivo_path)
+                
+                self.db.add_resultado({
+                    'path_nome_arquivo': str(arquivo_path),
+                    'resultado': 'Insucesso',
+                    'causa': 'Extensão inválida'
+                })
+                
+                return {
+                    'success': False,
+                    'message': 'Extensão inválida',
+                    'file': str(arquivo_path)
+                }
+            
+            # Extrair dados
+            dados = self._extrair_dados_do_xml(arquivo_path)
+            
+            if not dados or not dados.get('chave_acesso'):
+                self.file_handler.move_to_rejeitados(arquivo_path, "XML inválido")
+                
+                self.db.add_resultado({
+                    'path_nome_arquivo': str(arquivo_path),
+                    'resultado': 'Insucesso',
+                    'causa': 'XML inválido ou sem chave de acesso'
+                })
+                
+                return {
+                    'success': False,
+                    'message': 'XML inválido ou sem chave de acesso',
+                    'file': str(arquivo_path)
+                }
+            
+            # Verificar duplicado
+            chave_acesso = dados['chave_acesso']
+            if self.db.check_documento_existe(chave_acesso):
+                logger.warning(f"Documento duplicado: {chave_acesso}")
+                
+                self.file_handler.move_to_rejeitados(arquivo_path, "Documento duplicado")
+                
+                self.db.add_resultado({
+                    'path_nome_arquivo': str(arquivo_path),
+                    'resultado': 'Insucesso',
+                    'causa': f'Documento duplicado: {chave_acesso}'
+                })
+                
+                return {
+                    'success': False,
+                    'message': f'Documento duplicado: {chave_acesso}',
+                    'file': str(arquivo_path),
+                    'chave_acesso': chave_acesso
+                }
+            
+            logger.info("✅ Validação desabilitada temporariamente")
+            
+            # Adicionar ao banco
+            doc_id = self.db.add_documento(dados)
+            
+            if doc_id:
+                self.file_handler.move_to_processados(arquivo_path)
+                
+                self.db.add_resultado({
+                    'path_nome_arquivo': str(arquivo_path),
+                    'resultado': 'Sucesso',
+                    'causa': f"NFe {dados.get('numero_nf')} processada com sucesso"
+                })
+                
+                logger.info(f"Arquivo processado com sucesso: {arquivo_path.name}")
+                
+                return {
+                    'success': True,
+                    'message': 'Arquivo processado com sucesso',
+                    'file': str(arquivo_path),
+                    'dados': dados
+                }
+            else:
+                self.file_handler.move_to_rejeitados(arquivo_path, "Erro no banco de dados")
+                
+                self.db.add_resultado({
+                    'path_nome_arquivo': str(arquivo_path),
+                    'resultado': 'Insucesso',
+                    'causa': f"Erro ao processar {arquivo_path.name}"
+                })
+                
+                return {
+                    'success': False,
+                    'message': 'Erro ao adicionar ao banco de dados',
+                    'file': str(arquivo_path)
+                }
+                
+        except Exception as e:
+            logger.error(f"Erro ao processar arquivo {arquivo_path.name}: {str(e)}")
+            
+            try:
+                self.file_handler.move_to_rejeitados(arquivo_path, f"Erro: {str(e)}")
+                
+                self.db.add_resultado({
+                    'path_nome_arquivo': str(arquivo_path),
+                    'resultado': 'Insucesso',
+                    'causa': f"Erro no processamento: {str(e)}"
+                })
+            except:
+                pass
+            
+            return {
+                'success': False,
+                'message': f'Erro no processamento: {str(e)}',
+                'file': str(arquivo_path)
+            }
     
-        # Extrair seções do dicionário retornado por extract_data()
-        metadata = nf_data.get('metadata', {})
-        emitente = nf_data.get('emitente', {})
-        destinatario = nf_data.get('destinatario', {})
-        valores = nf_data.get('valores', {})
-        impostos = nf_data.get('impostos', {})
+    def process_uploaded_file(self, uploaded_file, nome_arquivo: str) -> Dict[str, Any]:
+        """Processa arquivo do Streamlit file_uploader"""
+        try:
+            conteudo = uploaded_file.getbuffer().tobytes()
+            
+            is_duplicado, chave_acesso = self._verificar_duplicado_antes_salvar(conteudo)
+            
+            if is_duplicado:
+                logger.warning(f"Upload bloqueado - arquivo duplicado: {nome_arquivo}")
+                return {
+                    'success': False,
+                    'message': f'Arquivo já existe no banco: {chave_acesso}',
+                    'file': nome_arquivo,
+                    'chave_acesso': chave_acesso,
+                    'duplicado': True
+                }
+            
+            temp_path = Path(self.settings.pasta_entrados) / nome_arquivo
+            temp_path.write_bytes(conteudo)
+            
+            return self.process_file(temp_path)
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar upload: {e}")
+            return {
+                'success': False,
+                'message': f'Erro no upload: {str(e)}',
+                'file': nome_arquivo
+            }
     
-        return {
-            'path_nome_arquivo': str(file_path),
-        
-            # Metadata
-            'chave_acesso': metadata.get('chave_acesso'),
-            'numero_nf': metadata.get('numero'),
-            'serie': metadata.get('serie'),
-            'modelo': metadata.get('modelo'),
-            'natureza_operacao': metadata.get('natureza_operacao'),
-            'tipo_operacao': metadata.get('tipo_operacao'),
-            'data_emissao': self._convert_date(metadata.get('data_emissao')),
-            'data_saida_entrada': self._convert_date(metadata.get('data_saida')),
-        
-            # Emitente
-            'cnpj_emitente': emitente.get('CNPJ'),
-            'cpf_emitente': emitente.get('CPF'),
-            'razao_social_emitente': emitente.get('xNome'),
-            'nome_fantasia_emitente': emitente.get('xFant'),
-            'ie_emitente': emitente.get('IE'),
-            'uf_emitente': emitente.get('enderEmit', {}).get('UF'),
-            'municipio_emitente': emitente.get('enderEmit', {}).get('xMun'),
-        
-            # Destinatário
-            'cnpj_destinatario': destinatario.get('CNPJ'),
-            'cpf_destinatario': destinatario.get('CPF'),
-            'razao_social_destinatario': destinatario.get('xNome'),
-            'ie_destinatario': destinatario.get('IE'),
-            'uf_destinatario': destinatario.get('enderDest', {}).get('UF'),
-            'municipio_destinatario': destinatario.get('enderDest', {}).get('xMun'),
-        
-            # Valores
-            'valor_total': float(valores.get('vNF', 0)),
-            'valor_produtos': float(valores.get('vProd', 0)),
-            'valor_frete': float(valores.get('vFrete', 0)),
-            'valor_seguro': float(valores.get('vSeg', 0)),
-            'valor_desconto': float(valores.get('vDesc', 0)),
-            'valor_outras_despesas': float(valores.get('vOutro', 0)),
-        
-            # Impostos
-            'base_calculo_icms': float(valores.get('vBC', 0)),
-            'valor_icms': float(impostos.get('ICMS', 0)),
-            'valor_ipi': float(impostos.get('IPI', 0)),
-            'valor_pis': float(impostos.get('PIS', 0)),
-            'valor_cofins': float(impostos.get('COFINS', 0)),
-        
-            # Códigos
-            'cfop': None,
-        
-            # Info adicionais
-            'info_complementar': None,
-            'info_fisco': None,
-        }
-    
-    def _register_success(self, file_path: Path, doc_id: int):
-        """Registra processamento bem-sucedido"""
-        self.db.add_resultado({
-            'path_nome_arquivo': str(file_path),
-            'resultado': 'Sucesso',
-            'causa': f'Documento ID {doc_id} salvo com sucesso'
-        })
-    
-    def _register_failure(self, file_path: Path, message: str):
-        """Registra falha no processamento"""
-        self.db.add_resultado({
-            'path_nome_arquivo': str(file_path),
-            'resultado': 'Insucesso',
-            'causa': message
-        })
-
-
-if __name__ == "__main__":
-    # Teste simples
-    processor = NFeProcessor()
-    print("✅ NFeProcessor inicializado!")
+    def process_batch(self) -> Dict[str, Any]:
+        """Processa todos os arquivos da pasta entrados"""
+        try:
+            arquivos = self.file_handler.get_arquivos_entrados()
+            
+            if not arquivos:
+                logger.info("Nenhum arquivo novo para processar")
+                return {
+                    'success': True,
+                    'message': 'Nenhum arquivo novo',
+                    'total': 0,
+                    'processados': 0,
+                    'erros': 0
+                }
+            
+            resultados = []
+            sucessos = 0
+            erros = 0
+            
+            for arquivo in arquivos:
+                resultado = self.process_file(arquivo)
+                resultados.append(resultado)
+                
+                if resultado['success']:
+                    sucessos += 1
+                else:
+                    erros += 1
+            
+            return {
+                'success': True,
+                'message': 'Processamento em lote concluído',
+                'total': len(arquivos),
+                'processados': sucessos,
+                'erros': erros,
+                'resultados': resultados
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro no processamento em lote: {e}")
+            return {
+                'success': False,
+                'message': f'Erro no batch: {str(e)}'
+            }

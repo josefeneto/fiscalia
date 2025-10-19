@@ -1,17 +1,13 @@
-# src/database/__init__.py - ARQUIVO COMPLETO CORRIGIDO
-
 """
-Módulo de banco de dados para Fiscalia
+Módulo de Database
 """
 
-from database.models import Base, DocParaERP, RegistroResultado
-from database.db_manager import DatabaseManager, get_db_manager, initialize_database
+from .db_manager import DatabaseManager
+from .models import Base, DocParaERP, RegistroResultado
 
 __all__ = [
+    'DatabaseManager',
     'Base',
     'DocParaERP',
-    'RegistroResultado',
-    'DatabaseManager',
-    'get_db_manager',
-    'initialize_database'
+    'RegistroResultado'
 ]
