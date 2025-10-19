@@ -1,6 +1,7 @@
 # ============================================
 # FISCALIA - Dependências do Projeto
 # ============================================
+# Otimizado para Railway deployment
 
 # Core Framework
 crewai>=0.140.0
@@ -47,18 +48,16 @@ pytz==2024.2
 # Logging
 loguru==0.7.2
 
-# Testing
+# Production Server (Railway)
+gunicorn==23.0.0
+
+# Testing (opcional em produção)
 pytest==8.3.3
 pytest-cov==6.0.0
 pytest-mock==3.14.0
 pytest-asyncio==0.21.1
 
-# Development Tools
+# Development Tools (não necessários em produção, mas úteis)
 black==24.10.0
 flake8==7.1.1
 mypy==1.13.0
-pre-commit==4.0.1
-
-# Railway/Docker
-gunicorn==23.0.0
-uvicorn==0.32.0
