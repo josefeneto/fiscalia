@@ -58,7 +58,55 @@ class NFeProcessor:
         }
     
         try:
-            # 1. Extrair dados do XML - CORRIGIDO AQUI
+            # ===== CORREÇÃO 1: VERIFICAR SE ARQUIVO EXISTE =====
+            if not file_path.exists():
+                result['message'] = 'Arquivo não encontrado'
+                logger.error(f"Arquivo não encontrado: {file_path}")
+                self._register_failure(file_path, result['message'])
+                return result
+            
+            # ===== CORREÇÃO 1.5: IGNORAR ARQUIVOS .gitkeep =====
+            if file_path.name == '.gitkeep':
+                logger.info(f"Arquivo .gitkeep ignorado: {file_path.name}")
+                return {
+                    'success': False,
+                    'file': str(file_path),
+                    'message': 'Arquivo .gitkeep ignorado (não processado)',
+                    'skipped': True
+                }
+            
+            # ===== CORREÇÃO 2: VERIFICAR EXTENSÃO DO ARQUIVO =====
+            file_extension = file_path.suffix.lower()
+            
+            # Se não é XML, rejeitar imediatamente
+            if file_extension != '.xml':
+                # Mensagens específicas por tipo
+                if file_extension == '.pdf':
+                    result['message'] = 'Formato PDF ainda não suportado nesta versão'
+                elif file_extension in ['.png', '.jpg', '.jpeg']:
+                    result['message'] = 'Formato de imagem ainda não suportado nesta versão'
+                elif file_extension in ['.doc', '.docx', '.txt']:
+                    result['message'] = f'Extensão {file_extension} não suportada'
+                else:
+                    result['message'] = f'Extensão {file_extension} não é suportada pelo sistema'
+                
+                logger.warning(f"Formato não suportado: {file_path.name} - {result['message']}")
+                self._register_failure(file_path, result['message'])
+                self.file_handler.move_to_rejected(file_path)
+                return result
+            
+            # ===== CORREÇÃO 3: VALIDAR ESTRUTURA BÁSICA DO XML =====
+            is_valid_structure, validation_msg = self.file_handler.validate_file_structure(file_path)
+            
+            if not is_valid_structure:
+                result['message'] = f'Estrutura inválida: {validation_msg}'
+                logger.warning(f"Arquivo com estrutura inválida: {file_path.name} - {validation_msg}")
+                self._register_failure(file_path, result['message'])
+                self.file_handler.move_to_rejected(file_path)
+                return result
+            
+            # ===== PROCESSAMENTO XML (código original) =====
+            # 1. Extrair dados do XML
             if not self.xml_processor.load_xml(file_path):
                 result['message'] = 'Erro ao carregar XML'
                 self._register_failure(file_path, result['message'])
@@ -131,8 +179,6 @@ class NFeProcessor:
         
         return result
     
-    
-
     def _prepare_doc_data(self, nf_data: Dict, file_path: Path) -> Dict:
         """Prepara dados para inserção no banco"""
     
@@ -153,8 +199,8 @@ class NFeProcessor:
             'modelo': metadata.get('modelo'),
             'natureza_operacao': metadata.get('natureza_operacao'),
             'tipo_operacao': metadata.get('tipo_operacao'),
-            'data_emissao': self._convert_date(metadata.get('data_emissao')),  # ← CONVERTER
-            'data_saida_entrada': self._convert_date(metadata.get('data_saida')),  # ← CONVERTER
+            'data_emissao': self._convert_date(metadata.get('data_emissao')),
+            'data_saida_entrada': self._convert_date(metadata.get('data_saida')),
         
             # Emitente
             'cnpj_emitente': emitente.get('CNPJ'),
