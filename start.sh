@@ -64,6 +64,30 @@ else
     echo "ℹ️  Usando SQLite (PostgreSQL não configurado)"
 fi
 
+# ==================== DETECTAR FICHEIRO PRINCIPAL ====================
+echo "🔍 Procurando ficheiro principal..."
+
+# Fiscalia usa streamlit_app/app.py
+if [ -f "streamlit_app/app.py" ]; then
+    MAIN_FILE="streamlit_app/app.py"
+    echo "✅ Ficheiro principal: $MAIN_FILE"
+elif [ -f "app.py" ]; then
+    MAIN_FILE="app.py"
+    echo "✅ Ficheiro principal: $MAIN_FILE"
+elif [ -f "main.py" ]; then
+    MAIN_FILE="main.py"
+    echo "✅ Ficheiro principal: $MAIN_FILE"
+else
+    echo "❌ ERRO: Ficheiro principal não encontrado!"
+    echo ""
+    echo "📂 Estrutura de diretórios:"
+    ls -la
+    echo ""
+    echo "📂 Conteúdo de streamlit_app/ (se existir):"
+    ls -la streamlit_app/ 2>/dev/null || echo "   (diretório não existe)"
+    exit 1
+fi
+
 # ==================== INICIAR STREAMLIT ====================
 echo ""
 echo "======================================"
@@ -71,7 +95,7 @@ echo "🎯 Iniciando Streamlit na porta $PORT"
 echo "======================================"
 echo ""
 
-exec streamlit run app.py \
+exec streamlit run $MAIN_FILE \
     --server.port=$PORT \
     --server.address=0.0.0.0 \
     --server.headless=true \
