@@ -428,7 +428,7 @@ Ver [LICENSE](https://opensource.org/licenses/MIT) para detalhes completos.
 
 - 🐛 **Bugs & Issues**: [GitHub Issues](https://github.com/josefeneto/fiscalia/issues)
 - 💬 **Discussões**: [GitHub Discussions](https://github.com/josefeneto/fiscalia/discussions)
-- 📧 **Email**: jose.fe.neto@gmx.com (substituir pelo seu email)
+- 📧 **Email**: jose.fe.neto@gmx.com
 - 🌐 **Demo**: [fiscalia.up.railway.app](https://fiscalia.up.railway.app)
 
 ### FAQ
