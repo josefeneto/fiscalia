@@ -368,7 +368,7 @@ fiscalia/
 - Chatbot para consultas
 - Integrações (Sage, PHC, etc.)
 
-**Tem uma ideia?** [Abra uma Issue](https://github.com/josefeneto/fiscalia/issues) ou [Discussão](https://github.com/josefeneto/fiscalia/discussions)!
+**Tem uma ideia?** [Abra uma Issue](https://github.com/josefeneto/fiscalia/issues) ou [Discussão](https://github.com/discussions)!
 
 ---
 
@@ -427,7 +427,7 @@ Ver [LICENSE](https://opensource.org/licenses/MIT) para detalhes completos.
 ### Canais de Suporte
 
 - 🐛 **Bugs & Issues**: [GitHub Issues](https://github.com/josefeneto/fiscalia/issues)
-- 💬 **Discussões**: [GitHub Discussions](https://github.com/josefeneto/fiscalia/discussions)
+- 💬 **Discussões**: [GitHub Discussions](https://github.com/discussions)
 - 📧 **Email**: jose.fe.neto@gmx.com
 - 🌐 **Demo**: [fiscalia.up.railway.app](https://fiscalia.up.railway.app)
 
