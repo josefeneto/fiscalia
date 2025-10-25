@@ -1,8 +1,6 @@
 """
-Fiscalia - Página de Upload de XMLs (VERSÃO FINAL V6 - CORRIGIDA)
-Sem modo pasta - Apenas Upload Individual e ZIP
-Deteção de duplicados por chave_acesso
-CORREÇÃO: Registra TODOS os resultados na BD usando SQLite direto
+Fiscalia - Página de Upload de XMLs (VERSÃO FINAL V7 - CORRIGIDA)
+Usa DatabaseManager corretamente (cria BD automaticamente)
 """
 
 import streamlit as st
@@ -11,8 +9,6 @@ from pathlib import Path
 from datetime import datetime
 import zipfile
 import io
-import sqlite3
-import os
 
 # Adicionar src ao path
 root_path = Path(__file__).parent.parent.parent
@@ -31,61 +27,27 @@ show_header("Upload de Notas Fiscais", "Carregar arquivos XML (individual ou ZIP
 
 # ==================== FUNÇÕES AUXILIARES ====================
 
-def get_db_path():
-    """Retorna caminho do banco de dados"""
-    # Estratégia 1: Via settings
-    try:
-        settings = get_settings()
-        if settings and hasattr(settings, 'database_url') and settings.database_url:
-            db_path = settings.database_url.replace('sqlite:///', '')
-            if os.path.exists(db_path):
-                return db_path
-    except:
-        pass
-    
-    # Estratégia 2: Locais comuns
-    possible_paths = [
-        root_path / 'data' / 'bd_fiscalia.db',
-        root_path / 'bd_fiscalia.db',
-        Path.cwd() / 'data' / 'bd_fiscalia.db',
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
-    
-    # Estratégia 3: Busca recursiva
-    for root, dirs, files in os.walk(root_path):
-        if 'bd_fiscalia.db' in files:
-            return os.path.join(root, 'bd_fiscalia.db')
-    
-    return str(root_path / 'data' / 'bd_fiscalia.db')
+@st.cache_resource
+def get_db():
+    """Retorna instância do DatabaseManager (cria BD automaticamente)"""
+    return DatabaseManager()
 
 
 def registrar_resultado_bd(arquivo_nome: str, resultado: str, causa: str = None):
     """
-    Registra resultado na tabela registo_resultados usando SQLite direto
+    Registra resultado na tabela registo_resultados usando DatabaseManager
     """
     try:
-        db_path = get_db_path()
+        db = get_db()
         
-        if not os.path.exists(db_path):
-            st.warning(f"⚠️ BD não encontrada: {db_path}")
-            return
+        resultado_data = {
+            'time_stamp': datetime.now(),
+            'path_nome_arquivo': str(Path("upload") / arquivo_nome),
+            'resultado': resultado,
+            'causa': causa
+        }
         
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Usar o caminho completo ou apenas o nome
-        path_arquivo = str(Path("upload") / arquivo_nome)
-        
-        cursor.execute("""
-            INSERT INTO registo_resultados (time_stamp, path_nome_arquivo, resultado, causa)
-            VALUES (?, ?, ?, ?)
-        """, (datetime.now(), path_arquivo, resultado, causa))
-        
-        conn.commit()
-        conn.close()
+        db.add_resultado(resultado_data)
         
     except Exception as e:
         st.warning(f"⚠️ Erro ao registrar resultado: {e}")
@@ -141,26 +103,18 @@ def extract_chave_acesso_from_root(root) -> str:
 
 def check_duplicate_by_chave(chave_acesso: str) -> tuple:
     """
-    Verifica se chave já existe na BD usando SQLite direto
+    Verifica se chave já existe na BD usando DatabaseManager
     Retorna: (is_duplicate: bool, existing_file: str)
     """
     if not chave_acesso:
         return (False, None)
     
     try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        db = get_db()
+        doc = db.get_documento_by_chave(chave_acesso)
         
-        cursor.execute(
-            "SELECT path_nome_arquivo FROM docs_para_erp WHERE chave_acesso = ?",
-            (chave_acesso,)
-        )
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            existing_file = Path(result[0]).name if result[0] else "desconhecido"
+        if doc:
+            existing_file = Path(doc.path_nome_arquivo).name if doc.path_nome_arquivo else "desconhecido"
             return (True, existing_file)
         return (False, None)
     except Exception as e:
@@ -424,12 +378,11 @@ with tab2:
                     for idx, (filename, content) in enumerate(xml_files):
                         status_text.text(f"Processando {idx+1}/{len(xml_files)}: {filename}")
                         
-                        # 1. Validar
+                        # Processar igual ao tab1
                         is_valid, validation_msg, root = validate_xml_structure(content)
                         
                         if not is_valid:
                             registrar_resultado_bd(filename, 'ERRO', validation_msg)
-                            
                             resultados.append({
                                 'arquivo': filename,
                                 'status': 'erro',
@@ -438,12 +391,10 @@ with tab2:
                             })
                             continue
                         
-                        # 2. Extrair chave
                         chave = extract_chave_acesso_from_root(root)
                         
                         if not chave:
                             registrar_resultado_bd(filename, 'ERRO', 'Chave não encontrada')
-                            
                             resultados.append({
                                 'arquivo': filename,
                                 'status': 'erro',
@@ -452,7 +403,6 @@ with tab2:
                             })
                             continue
                         
-                        # 3. Verificar duplicado
                         is_dup, existing_file = check_duplicate_by_chave(chave)
                         
                         if is_dup:
@@ -461,7 +411,6 @@ with tab2:
                                 'ERRO',
                                 f'Duplicado - já processado em: {existing_file}'
                             )
-                            
                             resultados.append({
                                 'arquivo': filename,
                                 'status': 'duplicado',
@@ -470,7 +419,6 @@ with tab2:
                             })
                             continue
                         
-                        # 4. Processar
                         try:
                             class FakeFile:
                                 def __init__(self, name, content):
@@ -516,7 +464,6 @@ with tab2:
                             else:
                                 msg_erro = resultado.get('message', 'Erro')
                                 registrar_resultado_bd(filename, 'ERRO', msg_erro)
-                                
                                 resultados.append({
                                     'arquivo': filename,
                                     'status': 'erro',
@@ -525,7 +472,6 @@ with tab2:
                                 })
                         except Exception as e:
                             registrar_resultado_bd(filename, 'ERRO', str(e))
-                            
                             resultados.append({
                                 'arquivo': filename,
                                 'status': 'erro',
@@ -581,3 +527,7 @@ with st.sidebar:
     st.write("✅ Por chave de acesso")
     st.write("✅ Validação XML")
     st.write("✅ Registo completo na BD")
+    st.write("---")
+    st.write("**BD Automática:**")
+    st.write("✅ Criada automaticamente")
+    st.write("✅ Sem configuração manual")

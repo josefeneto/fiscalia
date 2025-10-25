@@ -1,8 +1,6 @@
 """
-Fiscalia - Visualizar Banco de Dados (VERSÃO V9 - COM FILTRO DE PERÍODO)
-Visualização das 2 tabelas: docs_para_erp e registo_resultados
-Exportação CSV e XLSX
-Filtros avançados + Filtro de Período
+Fiscalia - Visualizar Banco de Dados (VERSÃO V10 - CORRIGIDA)
+Usa DatabaseManager corretamente (cria BD automaticamente)
 """
 
 import streamlit as st
@@ -11,8 +9,7 @@ from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
-import sqlite3
-import os
+from sqlalchemy import text
 
 # Adicionar src ao path
 root_path = Path(__file__).parent.parent
@@ -35,66 +32,24 @@ show_header("Visualizar Banco de Dados", "Consulte, filtre e exporte os dados pr
 
 @st.cache_resource
 def get_db():
-    """Retorna instância do DatabaseManager (cached)"""
+    """Retorna instância do DatabaseManager (cria BD automaticamente)"""
     return DatabaseManager()
-
-
-def get_db_path():
-    """
-    Retorna caminho do banco de dados com múltiplas estratégias de busca
-    """
-    # Estratégia 1: Tentar via get_settings
-    try:
-        from src.utils.config import get_settings
-        settings = get_settings()
-        if settings and hasattr(settings, 'database_url') and settings.database_url:
-            db_path = settings.database_url.replace('sqlite:///', '')
-            if os.path.exists(db_path):
-                return db_path
-    except:
-        pass
-    
-    # Estratégia 2: Procurar em locais comuns
-    possible_paths = [
-        root_path / 'data' / 'bd_fiscalia.db',
-        root_path / 'bd_fiscalia.db',
-        Path.cwd() / 'data' / 'bd_fiscalia.db',
-        Path.cwd() / 'bd_fiscalia.db',
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
-    
-    # Estratégia 3: Procurar recursivamente
-    for root, dirs, files in os.walk(root_path):
-        if 'bd_fiscalia.db' in files:
-            return os.path.join(root, 'bd_fiscalia.db')
-    
-    # Se não encontrar, retornar caminho padrão
-    return str(root_path / 'data' / 'bd_fiscalia.db')
 
 
 def load_docs_para_erp(data_inicio: str, data_fim: str) -> pd.DataFrame:
     """Carrega dados da tabela docs_para_erp com filtro de período"""
     try:
-        db_path = get_db_path()
+        db = get_db()
+        session = db.get_session()
         
-        if not os.path.exists(db_path):
-            st.warning(f"⚠️ Banco de dados não encontrado em: {db_path}")
-            return pd.DataFrame()
-        
-        conn = sqlite3.connect(db_path)
-        
-        # Query com filtro de período
-        query = f"""
+        query = text(f"""
         SELECT * FROM docs_para_erp 
         WHERE date(time_stamp) BETWEEN '{data_inicio}' AND '{data_fim}'
         ORDER BY time_stamp DESC
-        """
+        """)
         
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = pd.read_sql_query(query, session.bind)
+        session.close()
         
         # Converter colunas de data
         date_columns = ['time_stamp', 'data_emissao', 'data_saida_entrada']
@@ -112,23 +67,17 @@ def load_docs_para_erp(data_inicio: str, data_fim: str) -> pd.DataFrame:
 def load_registo_resultados(data_inicio: str, data_fim: str) -> pd.DataFrame:
     """Carrega dados da tabela registo_resultados com filtro de período"""
     try:
-        db_path = get_db_path()
+        db = get_db()
+        session = db.get_session()
         
-        if not os.path.exists(db_path):
-            st.warning(f"⚠️ Banco de dados não encontrado em: {db_path}")
-            return pd.DataFrame()
-        
-        conn = sqlite3.connect(db_path)
-        
-        # Query com filtro de período
-        query = f"""
+        query = text(f"""
         SELECT * FROM registo_resultados 
         WHERE date(time_stamp) BETWEEN '{data_inicio}' AND '{data_fim}'
         ORDER BY time_stamp DESC
-        """
+        """)
         
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = pd.read_sql_query(query, session.bind)
+        session.close()
         
         # Converter coluna de data
         if 'time_stamp' in df.columns:
@@ -348,7 +297,6 @@ else:  # "📋 Registo de Resultados"
             st.metric("📝 Total Registos", f"{len(df):,}")
         
         with col2:
-            # A coluna é "resultado", não "status"
             if 'resultado' in df.columns:
                 sucessos = len(df[df['resultado'] == 'SUCESSO'])
                 st.metric("✅ Sucessos", f"{sucessos:,}")
@@ -363,7 +311,6 @@ else:  # "📋 Registo de Resultados"
                 st.metric("❌ Erros", "N/A")
         
         with col4:
-            # Contar arquivos únicos
             if 'path_nome_arquivo' in df.columns:
                 arquivos = df['path_nome_arquivo'].nunique()
                 st.metric("📁 Arquivos", f"{arquivos:,}")
@@ -386,7 +333,7 @@ else:  # "📋 Registo de Resultados"
                     if resultado_filtro != 'Todos':
                         df_filtered = df_filtered[df_filtered['resultado'] == resultado_filtro]
             
-            # Filtro: Causa (para erros)
+            # Filtro: Causa
             with col2:
                 if 'causa' in df.columns:
                     causas = ['Todos'] + sorted(df['causa'].dropna().unique().tolist())
@@ -409,10 +356,9 @@ else:  # "📋 Registo de Resultados"
         if 'time_stamp' in df_display.columns and pd.api.types.is_datetime64_any_dtype(df_display['time_stamp']):
             df_display['time_stamp'] = df_display['time_stamp'].dt.strftime('%d/%m/%Y %H:%M')
         
-        # Simplificar path para mostrar só o nome do arquivo
+        # Simplificar path
         if 'path_nome_arquivo' in df_display.columns:
             df_display['arquivo'] = df_display['path_nome_arquivo'].apply(lambda x: Path(x).name if x else '')
-            # Reorganizar colunas
             cols = ['time_stamp', 'arquivo', 'resultado', 'causa']
             cols = [c for c in cols if c in df_display.columns]
             df_display = df_display[cols]
@@ -468,24 +414,16 @@ with st.sidebar:
     ---
     
     **Tabelas Disponíveis:**
-    - 📄 **Documentos para ERP**: Dados extraídos das NFe
-    - 📋 **Registo de Resultados**: Histórico de processamentos
+    - 📄 **Documentos para ERP**: Dados extraídos
+    - 📋 **Registo de Resultados**: Histórico
     
     ---
     
-    **Exportação:**
-    - 📄 CSV: Formato universal (texto)
-    - 📊 XLSX: Excel com formatação
-    
-    ---
-    
-    **Filtros Adicionais:**
-    - Use o expander "🔍 Filtros Adicionais"
-    - Combine com o filtro de período
-    - Refine sua visualização
+    **BD Automática:**
+    - ✅ Criada automaticamente
+    - ✅ Sem configuração manual
     """)
     
-    # Botão para limpar cache
     if st.button("🔄 Atualizar Dados", use_container_width=True):
         st.rerun()
 
@@ -496,8 +434,7 @@ st.markdown(
     """
     <div style='text-align: center; color: #666; padding: 20px;'>
         <p>📅 <em>Use o filtro de período para visualizar dados específicos</em></p>
-        <p>📊 Filtros adicionais disponíveis para refinar a visualização</p>
-        <p>📥 Exporte para CSV ou XLSX para análise externa</p>
+        <p>📥 <em>Exporte para CSV ou XLSX para análise externa</em></p>
     </div>
     """,
     unsafe_allow_html=True

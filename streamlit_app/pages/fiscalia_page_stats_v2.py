@@ -1,7 +1,6 @@
 """
-Fiscalia - Estatísticas e Análises (VERSÃO V5 - COM FILTRO DE PERÍODO UNIFICADO)
-Dashboard analítico com gráficos interativos e insights
-Filtro de período igual às páginas Visualizar e Consultas
+Fiscalia - Estatísticas e Análises (VERSÃO V5 - CORRIGIDA)
+Usa DatabaseManager corretamente (cria BD automaticamente)
 """
 
 import streamlit as st
@@ -9,17 +8,15 @@ import sys
 from pathlib import Path
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import sqlite3
-import os
+from sqlalchemy import text
 
 # Adicionar src ao path
 root_path = Path(__file__).parent.parent
 sys.path.insert(0, str(root_path))
 
 from src.database.db_manager import DatabaseManager
-from streamlit_app.components.common import show_header, show_success, show_error, show_info
+from streamlit_app.components.common import show_header, show_info
 
 # Configuração
 st.set_page_config(
@@ -35,57 +32,24 @@ show_header("Estatísticas e Análises", "Dashboard analítico com insights e vi
 
 @st.cache_resource
 def get_db():
-    """Retorna instância do DatabaseManager (cached)"""
+    """Retorna instância do DatabaseManager (cria BD automaticamente)"""
     return DatabaseManager()
-
-
-def get_db_path():
-    """Retorna caminho do banco de dados"""
-    try:
-        from src.utils.config import get_settings
-        settings = get_settings()
-        if settings and hasattr(settings, 'database_url') and settings.database_url:
-            db_path = settings.database_url.replace('sqlite:///', '')
-            if os.path.exists(db_path):
-                return db_path
-    except:
-        pass
-    
-    possible_paths = [
-        root_path / 'data' / 'bd_fiscalia.db',
-        root_path / 'bd_fiscalia.db',
-        Path.cwd() / 'data' / 'bd_fiscalia.db',
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
-    
-    for root, dirs, files in os.walk(root_path):
-        if 'bd_fiscalia.db' in files:
-            return os.path.join(root, 'bd_fiscalia.db')
-    
-    return str(root_path / 'data' / 'bd_fiscalia.db')
 
 
 def load_stats_data(data_inicio: str, data_fim: str) -> pd.DataFrame:
     """Carrega dados para estatísticas com filtro de período"""
     try:
-        db_path = get_db_path()
-        if not os.path.exists(db_path):
-            return pd.DataFrame()
+        db = get_db()
+        session = db.get_session()
         
-        conn = sqlite3.connect(db_path)
-        
-        # Query com filtro de período
-        query = f"""
+        query = text(f"""
         SELECT * FROM docs_para_erp 
         WHERE date(time_stamp) BETWEEN '{data_inicio}' AND '{data_fim}'
         ORDER BY time_stamp DESC
-        """
+        """)
         
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        df = pd.read_sql_query(query, session.bind)
+        session.close()
         
         # Converter datas
         date_columns = ['time_stamp', 'data_emissao', 'data_saida_entrada']
@@ -123,7 +87,6 @@ st.markdown("### 📅 Período de Análise")
 
 col1, col2, col3 = st.columns([1, 1, 2])
 
-# Default: mês corrente
 hoje = datetime.now()
 primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
 
@@ -153,7 +116,7 @@ with st.spinner("🔄 Carregando dados..."):
     df = load_stats_data(str(data_inicio), str(data_fim))
 
 if df.empty:
-    show_info("Nenhum dado encontrado no período selecionado.", "💡 Ajuste as datas ou use a página **📤 Upload** para processar ficheiros.")
+    show_info("Nenhum dado encontrado no período selecionado.", "💡 Ajuste as datas ou use a página **📤 Upload**.")
     st.stop()
 
 # ==================== KPIs PRINCIPAIS ====================
@@ -200,7 +163,6 @@ st.markdown("### 📈 Análises Visuais")
 
 col1, col2 = st.columns(2)
 
-# GRÁFICO 1: Distribuição por Estado
 with col1:
     st.markdown("#### 🗺️ Documentos por Estado")
     
@@ -221,7 +183,6 @@ with col1:
     else:
         st.info("📊 Dados de UF não disponíveis")
 
-# GRÁFICO 2: Valor Total por Estado
 with col2:
     st.markdown("#### 💰 Valor Total por Estado")
     
@@ -247,30 +208,44 @@ with col2:
 
 col1, col2 = st.columns(2)
 
-# GRÁFICO 3: Evolução Temporal
 with col1:
     st.markdown("#### 📅 Evolução no Tempo")
     
     if 'data_emissao' in df.columns:
         df_temp = df.copy()
-        df_temp['mes_ano'] = df_temp['data_emissao'].dt.to_period('M').astype(str)
-        df_temp = df_temp.groupby('mes_ano').size().reset_index(name='Quantidade')
+        # Remover valores nulos e garantir formato datetime
+        df_temp = df_temp[df_temp['data_emissao'].notna()].copy()
         
-        fig_tempo = px.line(
-            df_temp,
-            x='mes_ano',
-            y='Quantidade',
-            title='Documentos por Mês',
-            markers=True
-        )
-        fig_tempo.update_layout(height=400)
-        fig_tempo.update_xaxes(title='Mês/Ano')
-        fig_tempo.update_yaxes(title='Quantidade')
-        st.plotly_chart(fig_tempo, use_container_width=True)
+        if len(df_temp) > 0:
+            # Criar coluna mês/ano formatada
+            df_temp['mes_ano'] = df_temp['data_emissao'].dt.strftime('%Y-%m')
+            df_temp_grouped = df_temp.groupby('mes_ano').size().reset_index(name='Quantidade')
+            
+            # Ordenar por data
+            df_temp_grouped = df_temp_grouped.sort_values('mes_ano')
+            
+            # Converter para formato legível (MMM/AAAA)
+            df_temp_grouped['mes_ano_label'] = pd.to_datetime(df_temp_grouped['mes_ano']).dt.strftime('%b/%Y')
+            
+            fig_tempo = px.line(
+                df_temp_grouped,
+                x='mes_ano_label',
+                y='Quantidade',
+                title='Documentos por Mês',
+                markers=True
+            )
+            fig_tempo.update_layout(
+                height=400,
+                xaxis_title='Mês/Ano',
+                yaxis_title='Quantidade'
+            )
+            fig_tempo.update_xaxes(tickangle=-45)
+            st.plotly_chart(fig_tempo, use_container_width=True)
+        else:
+            st.info("📊 Sem dados com datas válidas")
     else:
         st.info("📊 Dados de data não disponíveis")
 
-# GRÁFICO 4: Status ERP
 with col2:
     st.markdown("#### ⚙️ Status de Processamento ERP")
     
@@ -300,60 +275,40 @@ st.markdown("### 🏆 Rankings (por Valor Total)")
 
 col1, col2 = st.columns(2)
 
-# TOP 10 Emitentes - ORDENADO POR VALOR
 with col1:
     st.markdown("#### 📤 Top 10 Emitentes")
     
     if 'razao_social_emitente' in df.columns and 'valor_total' in df.columns:
-        # Agrupar por emitente e somar valores
         df_emit = df.groupby('razao_social_emitente').agg({
             'valor_total': 'sum',
             'numero_nf': 'count'
         }).reset_index()
         
         df_emit.columns = ['Emitente', 'Valor Total (€)', 'Qtd Docs']
-        
-        # Ordenar por valor decrescente
         df_emit = df_emit.sort_values('Valor Total (€)', ascending=False).head(10)
         
-        # Formatar valores
         df_emit['Valor Total'] = df_emit['Valor Total (€)'].apply(format_currency)
         df_emit = df_emit[['Emitente', 'Valor Total', 'Qtd Docs']]
         
         st.dataframe(df_emit, use_container_width=True, hide_index=True, height=400)
-    elif 'razao_social_emitente' in df.columns:
-        # Fallback se não houver valor_total
-        df_emit = df['razao_social_emitente'].value_counts().head(10).reset_index()
-        df_emit.columns = ['Emitente', 'Qtd Documentos']
-        st.dataframe(df_emit, use_container_width=True, hide_index=True, height=400)
     else:
         st.info("📊 Dados de emitentes não disponíveis")
 
-# TOP 10 Destinatários - ORDENADO POR VALOR
 with col2:
     st.markdown("#### 📥 Top 10 Destinatários")
     
     if 'razao_social_destinatario' in df.columns and 'valor_total' in df.columns:
-        # Agrupar por destinatário e somar valores
         df_dest = df.groupby('razao_social_destinatario').agg({
             'valor_total': 'sum',
             'numero_nf': 'count'
         }).reset_index()
         
         df_dest.columns = ['Destinatário', 'Valor Total (€)', 'Qtd Docs']
-        
-        # Ordenar por valor decrescente
         df_dest = df_dest.sort_values('Valor Total (€)', ascending=False).head(10)
         
-        # Formatar valores
         df_dest['Valor Total'] = df_dest['Valor Total (€)'].apply(format_currency)
         df_dest = df_dest[['Destinatário', 'Valor Total', 'Qtd Docs']]
         
-        st.dataframe(df_dest, use_container_width=True, hide_index=True, height=400)
-    elif 'razao_social_destinatario' in df.columns:
-        # Fallback se não houver valor_total
-        df_dest = df['razao_social_destinatario'].value_counts().head(10).reset_index()
-        df_dest.columns = ['Destinatário', 'Qtd Documentos']
         st.dataframe(df_dest, use_container_width=True, hide_index=True, height=400)
     else:
         st.info("📊 Dados de destinatários não disponíveis")
@@ -374,8 +329,7 @@ if 'valor_total' in df.columns:
             df,
             x='valor_total',
             nbins=30,
-            title='Distribuição de Valores',
-            labels={'valor_total': 'Valor Total'}
+            title='Distribuição de Valores'
         )
         fig_hist.update_layout(height=300)
         st.plotly_chart(fig_hist, use_container_width=True)
@@ -393,7 +347,6 @@ if 'valor_total' in df.columns:
     with col3:
         st.markdown("#### 🎯 Faixas de Valor")
         
-        # Criar faixas de valor
         bins = [0, 1000, 5000, 10000, 50000, float('inf')]
         labels = ['0-1k', '1k-5k', '5k-10k', '10k-50k', '50k+']
         df['faixa_valor'] = pd.cut(df['valor_total'], bins=bins, labels=labels)
@@ -405,25 +358,18 @@ if 'valor_total' in df.columns:
             df_faixas,
             x='Faixa',
             y='Quantidade',
-            title='Documentos por Faixa de Valor'
+            title='Documentos por Faixa'
         )
         fig_faixas.update_layout(height=300)
         st.plotly_chart(fig_faixas, use_container_width=True)
 
-st.markdown("---")
-
-# ==================== SIDEBAR COM RESUMO ====================
+# ==================== SIDEBAR ====================
 
 with st.sidebar:
     st.header("📋 Resumo Estatístico")
     
     st.markdown("**Período Analisado:**")
-    if 'time_stamp' in df.columns:
-        data_min = df['time_stamp'].min()
-        data_max = df['time_stamp'].max()
-        st.write(f"📅 {data_min.strftime('%d/%m/%Y')} até {data_max.strftime('%d/%m/%Y')}")
-    else:
-        st.write(f"📅 {data_inicio.strftime('%d/%m/%Y')} até {data_fim.strftime('%d/%m/%Y')}")
+    st.write(f"📅 {data_inicio.strftime('%d/%m/%Y')} até {data_fim.strftime('%d/%m/%Y')}")
     
     st.markdown("---")
     
@@ -445,7 +391,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Botão para atualizar
     if st.button("🔄 Atualizar Dados", use_container_width=True):
         st.rerun()
 
@@ -456,8 +401,7 @@ st.markdown(
     """
     <div style='text-align: center; color: #666; padding: 20px;'>
         <p>📅 <em>Selecione o período para análises específicas</em></p>
-        <p>📊 <em>Dashboard atualizado em tempo real com base no período selecionado</em></p>
-        <p>🏆 <em>Rankings ordenados por valor total (maior para menor)</em></p>
+        <p>🏆 <em>Rankings ordenados por valor total</em></p>
     </div>
     """,
     unsafe_allow_html=True

@@ -1,7 +1,8 @@
 """
-Fiscalia - Consultas Inteligentes (VERSÃO COMPLETA V4)
+Fiscalia - Consultas Inteligentes (VERSÃO DEFINITIVA V4 - CORRIGIDA)
 SQL Direto + Linguagem Natural com processamento inteligente
 Perguntas pré-definidas com seleção de período
+Usa DatabaseManager corretamente (cria BD automaticamente)
 """
 
 import streamlit as st
@@ -9,10 +10,8 @@ import sys
 from pathlib import Path
 import pandas as pd
 import plotly.express as px
-import sqlite3
-import os
 from datetime import datetime, timedelta
-import re
+from sqlalchemy import text
 
 # Adicionar src ao path
 root_path = Path(__file__).parent.parent
@@ -33,46 +32,25 @@ show_header("Consultas Inteligentes", "Análises com SQL direto ou perguntas em 
 
 # ==================== FUNÇÕES AUXILIARES ====================
 
-def get_db_path():
-    """Retorna caminho do banco de dados"""
-    try:
-        from src.utils.config import get_settings
-        settings = get_settings()
-        if settings and hasattr(settings, 'database_url') and settings.database_url:
-            db_path = settings.database_url.replace('sqlite:///', '')
-            if os.path.exists(db_path):
-                return db_path
-    except:
-        pass
-    
-    possible_paths = [
-        root_path / 'data' / 'bd_fiscalia.db',
-        root_path / 'bd_fiscalia.db',
-        Path.cwd() / 'data' / 'bd_fiscalia.db',
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
-    
-    for root, dirs, files in os.walk(root_path):
-        if 'bd_fiscalia.db' in files:
-            return os.path.join(root, 'bd_fiscalia.db')
-    
-    return str(root_path / 'data' / 'bd_fiscalia.db')
+@st.cache_resource
+def get_db():
+    """Retorna instância do DatabaseManager (cria BD automaticamente)"""
+    return DatabaseManager()
 
 
 def executar_query(query: str) -> pd.DataFrame:
     """Executa query SQL e retorna DataFrame"""
     try:
-        db_path = get_db_path()
-        if not os.path.exists(db_path):
-            st.error("❌ Banco de dados não encontrado")
-            return pd.DataFrame()
+        db = get_db()
+        session = db.get_session()
         
-        conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        # Envolver query em text()
+        if isinstance(query, str):
+            query = text(query)
+        
+        df = pd.read_sql_query(query, session.bind)
+        session.close()
+        
         return df
     except Exception as e:
         st.error(f"❌ Erro ao executar consulta: {e}")
@@ -91,7 +69,7 @@ def format_currency(value) -> str:
 
 def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -> tuple:
     """
-    Processa pergunta em linguagem natural e retorna (query_sql, resposta_texto)
+    Processa pergunta em linguagem natural e retorna (query_sql, resposta_texto, dataframe)
     """
     pergunta_lower = pergunta.lower()
     
@@ -99,7 +77,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
     filtro_periodo = f"data_emissao BETWEEN '{data_inicio}' AND '{data_fim}'"
     
     # PERGUNTA 1: Quantas notas fiscais?
-    if any(word in pergunta_lower for word in ['quantas notas', 'quantas nf', 'total de notas', 'número de notas']):
+    if any(word in pergunta_lower for word in ['quantas notas', 'quantas nf', 'total de notas', 'número de notas', 'total de registos', 'quantidade de notas', 'qt notas', 'qtd notas']):
         query = f"""
         SELECT COUNT(*) as total_notas,
                SUM(valor_total) as valor_total
@@ -113,8 +91,8 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             resposta = f"📊 **Total de Notas Fiscais no período:** {total:,} notas\n\n💰 **Valor Total:** {valor}".replace(",", ".")
             return query, resposta, df
     
-    # PERGUNTA 5: Total do valor bruto
-    if any(word in pergunta_lower for word in ['total do valor', 'valor bruto', 'valor total', 'soma dos valores']):
+    # PERGUNTA 2: Total do valor bruto
+    if any(word in pergunta_lower for word in ['total do valor', 'valor bruto', 'valor total', 'soma dos valores', 'total valor', 'quanto foi', 'valor das notas']):
         query = f"""
         SELECT 
             SUM(valor_total) as valor_bruto_total,
@@ -131,7 +109,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             resposta = f"💰 **Valor Bruto Total:** {total}\n\n📊 **Valor Médio por Nota:** {medio}\n\n📝 **Quantidade de Notas:** {qtd:,}".replace(",", ".")
             return query, resposta, df
     
-    # PERGUNTA 6: Total de descontos
+    # PERGUNTA 3: Total de descontos
     if any(word in pergunta_lower for word in ['desconto', 'descontos']):
         query = f"""
         SELECT 
@@ -149,7 +127,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             resposta = f"💸 **Total de Descontos:** {total}\n\n📊 **Média de Desconto:** {media}\n\n📝 **Notas com Desconto:** {qtd:,}".replace(",", ".")
             return query, resposta, df
     
-    # PERGUNTA 7: Total de impostos
+    # PERGUNTA 4: Total de impostos
     if any(word in pergunta_lower for word in ['imposto', 'impostos', 'icms', 'ipi', 'pis', 'cofins']):
         query = f"""
         SELECT 
@@ -171,7 +149,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             resposta = f"💰 **Total de Impostos:** {total}\n\n📊 **Detalhamento:**\n- ICMS: {icms}\n- IPI: {ipi}\n- PIS: {pis}\n- COFINS: {cofins}"
             return query, resposta, df
     
-    # PERGUNTA 8: Estatísticas de valores
+    # PERGUNTA 5: Estatísticas de valores
     if any(word in pergunta_lower for word in ['média', 'mediana', 'máximo', 'mínimo', 'estatísticas']):
         query = f"""
         SELECT 
@@ -191,7 +169,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             resposta = f"📊 **Estatísticas de Valores:**\n\n- Média: {media}\n- Mínimo: {minimo}\n- Máximo: {maximo}\n- Total de Notas: {total:,}".replace(",", ".")
             return query, resposta, df
     
-    # PERGUNTA 9-10: Por destinatário
+    # PERGUNTA 6: Por destinatário
     if any(word in pergunta_lower for word in ['destinatário', 'destinatarios', 'cliente', 'clientes', 'top destina']):
         query = f"""
         SELECT 
@@ -209,16 +187,40 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
         if not df.empty:
             df['Valor Total'] = df['valor_total'].apply(format_currency)
             df['Valor Médio'] = df['valor_medio'].apply(format_currency)
-            resposta = "📥 **Top 10 Destinatários por Valor Total:**"
-            return query, resposta, df[['Destinatário', 'Quantidade', 'Valor Total', 'Valor Médio']]
+            df_display = df[['Destinatário', 'Quantidade', 'Valor Total', 'Valor Médio']]
+            resposta = "📥 **Top 10 Destinatários (por valor total):**"
+            return query, resposta, df_display
     
-    # PERGUNTA 11: Por UF
-    if any(word in pergunta_lower for word in ['estado', 'uf', 'geografia', 'região']):
+    # PERGUNTA 7: Por emitente/fornecedor
+    if any(word in pergunta_lower for word in ['emitente', 'emitentes', 'fornecedor', 'fornecedores', 'top emit']):
+        query = f"""
+        SELECT 
+            razao_social_emitente as 'Emitente',
+            COUNT(*) as 'Quantidade',
+            SUM(valor_total) as valor_total,
+            AVG(valor_total) as valor_medio
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        GROUP BY razao_social_emitente
+        ORDER BY valor_total DESC
+        LIMIT 10
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor Total'] = df['valor_total'].apply(format_currency)
+            df['Valor Médio'] = df['valor_medio'].apply(format_currency)
+            df_display = df[['Emitente', 'Quantidade', 'Valor Total', 'Valor Médio']]
+            resposta = "📤 **Top 10 Emitentes/Fornecedores (por valor total):**"
+            return query, resposta, df_display
+    
+    # PERGUNTA 8: Por estado/UF
+    if any(word in pergunta_lower for word in ['estado', 'estados', 'uf', 'distribuição', 'distribui', 'por estado', 'quais estados', 'geográfica', 'geografica']):
         query = f"""
         SELECT 
             uf_emitente as 'UF',
             COUNT(*) as 'Quantidade',
-            SUM(valor_total) as valor_total
+            SUM(valor_total) as valor_total,
+            AVG(valor_total) as valor_medio
         FROM docs_para_erp
         WHERE {filtro_periodo}
         GROUP BY uf_emitente
@@ -227,49 +229,13 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
         df = executar_query(query)
         if not df.empty:
             df['Valor Total'] = df['valor_total'].apply(format_currency)
-            resposta = "🗺️ **Distribuição por Estado (UF):**"
-            return query, resposta, df[['UF', 'Quantidade', 'Valor Total']]
+            df['Valor Médio'] = df['valor_medio'].apply(format_currency)
+            df_display = df[['UF', 'Quantidade', 'Valor Total', 'Valor Médio']]
+            resposta = "🗺️ **Distribuição por Estado:**"
+            return query, resposta, df_display
     
-    # PERGUNTA 12: Por município
-    if any(word in pergunta_lower for word in ['município', 'municipio', 'cidade', 'cidades']):
-        query = f"""
-        SELECT 
-            municipio_destinatario as 'Município',
-            uf_destinatario as 'UF',
-            COUNT(*) as 'Quantidade',
-            SUM(valor_total) as valor_total
-        FROM docs_para_erp
-        WHERE {filtro_periodo}
-        GROUP BY municipio_destinatario, uf_destinatario
-        ORDER BY valor_total DESC
-        LIMIT 20
-        """
-        df = executar_query(query)
-        if not df.empty:
-            df['Valor Total'] = df['valor_total'].apply(format_currency)
-            resposta = "🏙️ **Top 20 Municípios por Valor Total:**"
-            return query, resposta, df[['Município', 'UF', 'Quantidade', 'Valor Total']]
-    
-    # PERGUNTA 24: Distribuição temporal
-    if any(word in pergunta_lower for word in ['tempo', 'temporal', 'mensal', 'diária', 'evolução', 'tendência']):
-        query = f"""
-        SELECT 
-            strftime('%Y-%m-%d', data_emissao) as 'Data',
-            COUNT(*) as 'Quantidade',
-            SUM(valor_total) as valor_total
-        FROM docs_para_erp
-        WHERE {filtro_periodo}
-        GROUP BY strftime('%Y-%m-%d', data_emissao)
-        ORDER BY data_emissao
-        """
-        df = executar_query(query)
-        if not df.empty:
-            df['Valor Total'] = df['valor_total'].apply(format_currency)
-            resposta = "📅 **Distribuição Temporal (por dia):**"
-            return query, resposta, df[['Data', 'Quantidade', 'Valor Total']]
-    
-    # PERGUNTA 20: Duplicados
-    if any(word in pergunta_lower for word in ['duplicado', 'duplicados', 'repetido', 'repetidos']):
+    # PERGUNTA 9: Duplicados
+    if any(word in pergunta_lower for word in ['duplicado', 'duplicadas', 'repetido', 'repetidas']):
         query = f"""
         SELECT 
             numero_nf as 'Número NF',
@@ -279,6 +245,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
         WHERE {filtro_periodo}
         GROUP BY numero_nf, serie
         HAVING COUNT(*) > 1
+        ORDER BY COUNT(*) DESC
         """
         df = executar_query(query)
         if not df.empty:
@@ -288,7 +255,129 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             resposta = "✅ **Nenhuma nota duplicada encontrada no período!**"
             return query, resposta, pd.DataFrame()
     
-    # Fallback: Não reconheceu a pergunta
+    # PERGUNTA 10: Maiores valores
+    if any(word in pergunta_lower for word in ['maiores valores', 'maiores notas', 'top valores', 'notas maiores', 'valores maiores', 'quais as notas', 'quais notas']):
+        query = f"""
+        SELECT 
+            numero_nf as 'Número NF',
+            razao_social_emitente as 'Emitente',
+            razao_social_destinatario as 'Destinatário',
+            valor_total as 'Valor',
+            data_emissao as 'Data'
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        ORDER BY valor_total DESC
+        LIMIT 20
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor'] = df['Valor'].apply(format_currency)
+            resposta = "💰 **Top 20 Notas por Maior Valor:**"
+            return query, resposta, df
+    
+    # PERGUNTA 11: Status ERP
+    if any(word in pergunta_lower for word in ['erp', 'processad', 'pendente']):
+        query = f"""
+        SELECT 
+            erp_processado as 'Status ERP',
+            COUNT(*) as 'Quantidade',
+            SUM(valor_total) as valor_total
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        GROUP BY erp_processado
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor Total'] = df['valor_total'].apply(format_currency)
+            df['Status ERP'] = df['Status ERP'].map({'Yes': '✅ Processado', 'No': '⏳ Pendente'})
+            df_display = df[['Status ERP', 'Quantidade', 'Valor Total']]
+            resposta = "⚙️ **Status de Processamento ERP:**"
+            return query, resposta, df_display
+    
+    # PERGUNTA 12: Por município
+    if any(word in pergunta_lower for word in ['município', 'municipio', 'cidade', 'cidades']):
+        query = f"""
+        SELECT 
+            municipio_emitente as 'Município',
+            uf_emitente as 'UF',
+            COUNT(*) as 'Quantidade',
+            SUM(valor_total) as valor_total
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        GROUP BY municipio_emitente, uf_emitente
+        ORDER BY valor_total DESC
+        LIMIT 20
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor Total'] = df['valor_total'].apply(format_currency)
+            df_display = df[['Município', 'UF', 'Quantidade', 'Valor Total']]
+            resposta = "🏙️ **Top 20 Municípios:**"
+            return query, resposta, df_display
+    
+    # PERGUNTA 13: Evolução temporal
+    if any(word in pergunta_lower for word in ['evolução', 'evolucao', 'temporal', 'mês', 'mes', 'mensal', 'diária', 'diaria']):
+        query = f"""
+        SELECT 
+            strftime('%Y-%m', data_emissao) as 'Mês',
+            COUNT(*) as 'Quantidade',
+            SUM(valor_total) as valor_total,
+            AVG(valor_total) as valor_medio
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        GROUP BY strftime('%Y-%m', data_emissao)
+        ORDER BY strftime('%Y-%m', data_emissao)
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor Total'] = df['valor_total'].apply(format_currency)
+            df['Valor Médio'] = df['valor_medio'].apply(format_currency)
+            df_display = df[['Mês', 'Quantidade', 'Valor Total', 'Valor Médio']]
+            resposta = "📅 **Evolução Temporal:**"
+            return query, resposta, df_display
+    
+    # FALLBACK: Tentar detectar intenção por palavras-chave parciais
+    # Se tem "maior" ou "alto" → maiores valores
+    if ('maior' in pergunta_lower or 'alto' in pergunta_lower) and 'valor' in pergunta_lower:
+        query = f"""
+        SELECT 
+            numero_nf as 'Número NF',
+            razao_social_emitente as 'Emitente',
+            razao_social_destinatario as 'Destinatário',
+            valor_total as 'Valor',
+            data_emissao as 'Data'
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        ORDER BY valor_total DESC
+        LIMIT 20
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor'] = df['Valor'].apply(format_currency)
+            resposta = "💰 **Top 20 Notas por Maior Valor:**"
+            return query, resposta, df
+    
+    # Se tem "menor" ou "baixo" → menores valores
+    if ('menor' in pergunta_lower or 'baixo' in pergunta_lower) and 'valor' in pergunta_lower:
+        query = f"""
+        SELECT 
+            numero_nf as 'Número NF',
+            razao_social_emitente as 'Emitente',
+            razao_social_destinatario as 'Destinatário',
+            valor_total as 'Valor',
+            data_emissao as 'Data'
+        FROM docs_para_erp
+        WHERE {filtro_periodo}
+        ORDER BY valor_total ASC
+        LIMIT 20
+        """
+        df = executar_query(query)
+        if not df.empty:
+            df['Valor'] = df['Valor'].apply(format_currency)
+            resposta = "📉 **Top 20 Notas por Menor Valor:**"
+            return query, resposta, df
+    
+    # Pergunta não reconhecida
     return None, "❓ **Pergunta não reconhecida.** Por favor, reformule ou escolha uma das sugestões abaixo.", pd.DataFrame()
 
 
@@ -344,46 +433,105 @@ with tab1:
         - Quais os top 10 destinatários por valor?
         - Quais os clientes com mais notas?
         
+        **Por Emitente:**
+        - Quais os top 10 emitentes por valor?
+        - Quais os fornecedores com mais notas?
+        
         **Geografia:**
         - Qual a distribuição por estado (UF)?
         - Quais os top 20 municípios por valor?
         
         **Tempo:**
         - Qual a evolução temporal das notas?
-        - Qual a distribuição diária/mensal?
+        - Qual a evolução mensal?
+        
+        **Status:**
+        - Qual o status de processamento ERP?
+        - Quantas notas processadas vs pendentes?
         
         **Integridade:**
         - Há notas duplicadas?
-        - Há inconsistências nos dados?
+        - Quais as notas com maiores valores?
         """)
         
         # Botões de exemplo
         st.markdown("**Clique para usar:**")
         col1, col2, col3 = st.columns(3)
         
+        # Variável para controlar se um botão foi clicado
+        pergunta_do_botao = None
+        
         with col1:
             if st.button("📊 Quantas notas?", key="ex1"):
-                st.session_state.pergunta_ln = "Quantas notas fiscais há no período?"
+                pergunta_do_botao = "Quantas notas fiscais há no período?"
             if st.button("💰 Valor total?", key="ex2"):
-                st.session_state.pergunta_ln = "Qual o total do valor bruto?"
+                pergunta_do_botao = "Qual o total do valor bruto?"
             if st.button("📥 Top destinatários?", key="ex3"):
-                st.session_state.pergunta_ln = "Quais os top 10 destinatários?"
+                pergunta_do_botao = "Quais os top 10 destinatários?"
         
         with col2:
             if st.button("🗺️ Por estado?", key="ex4"):
-                st.session_state.pergunta_ln = "Qual a distribuição por estado?"
+                pergunta_do_botao = "Qual a distribuição por estado?"
             if st.button("💸 Descontos?", key="ex5"):
-                st.session_state.pergunta_ln = "Qual o total de descontos?"
+                pergunta_do_botao = "Qual o total de descontos?"
             if st.button("📈 Estatísticas?", key="ex6"):
-                st.session_state.pergunta_ln = "Qual a média, mínimo e máximo?"
+                pergunta_do_botao = "Qual a média, mínimo e máximo?"
         
         with col3:
             if st.button("📅 Evolução temporal?", key="ex7"):
-                st.session_state.pergunta_ln = "Qual a evolução temporal?"
+                pergunta_do_botao = "Qual a evolução temporal?"
             if st.button("🏙️ Por município?", key="ex8"):
-                st.session_state.pergunta_ln = "Quais os top 20 municípios?"
+                pergunta_do_botao = "Quais os top 20 municípios?"
             if st.button("⚠️ Duplicados?", key="ex9"):
-                st.session_state.pergunta_ln = "Há notas duplicadas?"
+                pergunta_do_botao = "Há notas duplicadas?"
+        
+        # Se algum botão foi clicado, processar imediatamente
+        if pergunta_do_botao:
+            st.markdown("---")
+            st.info(f"🔍 Processando: **{pergunta_do_botao}**")
+            
+            with st.spinner("🤔 Processando sua pergunta..."):
+                query, resposta, df_resultado = processar_pergunta_natural(
+                    pergunta_do_botao,
+                    str(data_inicio),
+                    str(data_fim)
+                )
+                
+                if query:
+                    st.markdown("---")
+                    st.markdown("### 💬 Resposta")
+                    st.markdown(resposta)
+                    
+                    # Mostrar DataFrame se houver
+                    if not df_resultado.empty:
+                        st.markdown("#### 📊 Dados Detalhados")
+                        st.dataframe(df_resultado, use_container_width=True, hide_index=True, height=400)
+                        
+                        # Gráfico se for numérico
+                        if len(df_resultado) > 1 and 'valor_total' in df_resultado.columns:
+                            st.markdown("#### 📈 Visualização")
+                            fig = px.bar(
+                                df_resultado.head(15),
+                                x=df_resultado.columns[0],
+                                y='valor_total',
+                                title='Distribuição de Valores'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Botão de exportação
+                        csv = df_resultado.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Baixar Resultados (CSV)",
+                            data=csv,
+                            file_name=f"consulta_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                    
+                    # Mostrar SQL usado (opcional)
+                    with st.expander("🔍 Ver SQL Gerado"):
+                        st.code(query, language="sql")
+                else:
+                    st.warning(resposta)
     
     st.markdown("---")
     
@@ -573,6 +721,12 @@ with st.sidebar:
     - 💡 Use perguntas claras
     - 📊 Exporte para análise externa
     - 🔍 Combine múltiplas consultas
+    
+    ---
+    
+    **BD Automática:**
+    - ✅ Criada automaticamente
+    - ✅ Sem configuração manual
     """)
     
     st.markdown("---")
