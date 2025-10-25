@@ -1,295 +1,583 @@
 """
-Fiscalia - Página de Upload de XMLs (VERSÃO FINAL)
+Fiscalia - Página de Upload de XMLs (VERSÃO FINAL V6 - CORRIGIDA)
+Sem modo pasta - Apenas Upload Individual e ZIP
+Deteção de duplicados por chave_acesso
+CORREÇÃO: Registra TODOS os resultados na BD usando SQLite direto
 """
 
 import streamlit as st
 import sys
 from pathlib import Path
 from datetime import datetime
+import zipfile
+import io
+import sqlite3
+import os
 
 # Adicionar src ao path
 root_path = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_path))
 
 from src.processors.nfe_processor import NFeProcessor
+from src.database.db_manager import DatabaseManager
 from src.utils.config import get_settings
 from streamlit_app.components.common import show_header, show_success, show_error, show_info
 
 # Configuração
 st.set_page_config(page_title="Upload - Fiscalia", page_icon="📤", layout="wide")
 
-# ==================== SESSION STATE ====================
-if 'arquivos_processados' not in st.session_state:
-    st.session_state.arquivos_processados = set()
-
-if 'ultimo_modo' not in st.session_state:
-    st.session_state.ultimo_modo = None
-
 # Header
-show_header("Upload de Arquivos XML", "Carregue arquivos XML de Notas Fiscais Eletrônicas")
+show_header("Upload de Notas Fiscais", "Carregar arquivos XML (individual ou ZIP)")
 
-# Configuração de pastas
-settings = get_settings()
+# ==================== FUNÇÕES AUXILIARES ====================
 
-st.markdown("### ⚙️ Configuração de Pastas")
+def get_db_path():
+    """Retorna caminho do banco de dados"""
+    # Estratégia 1: Via settings
+    try:
+        settings = get_settings()
+        if settings and hasattr(settings, 'database_url') and settings.database_url:
+            db_path = settings.database_url.replace('sqlite:///', '')
+            if os.path.exists(db_path):
+                return db_path
+    except:
+        pass
+    
+    # Estratégia 2: Locais comuns
+    possible_paths = [
+        root_path / 'data' / 'bd_fiscalia.db',
+        root_path / 'bd_fiscalia.db',
+        Path.cwd() / 'data' / 'bd_fiscalia.db',
+    ]
+    
+    for path in possible_paths:
+        if path.exists():
+            return str(path)
+    
+    # Estratégia 3: Busca recursiva
+    for root, dirs, files in os.walk(root_path):
+        if 'bd_fiscalia.db' in files:
+            return os.path.join(root, 'bd_fiscalia.db')
+    
+    return str(root_path / 'data' / 'bd_fiscalia.db')
 
-col1, col2 = st.columns([3, 1])
 
-with col1:
-    pasta_info = f"""
-    📁 **Pasta Base**: `{settings.pasta_base}`
-    - 📥 Entrados: `{settings.pasta_entrados}`
-    - ✅ Processados: `{settings.pasta_processados}`
-    - ❌ Rejeitados: `{settings.pasta_rejeitados}`
+def registrar_resultado_bd(arquivo_nome: str, resultado: str, causa: str = None):
     """
-    st.info(pasta_info)
+    Registra resultado na tabela registo_resultados usando SQLite direto
+    """
+    try:
+        db_path = get_db_path()
+        
+        if not os.path.exists(db_path):
+            st.warning(f"⚠️ BD não encontrada: {db_path}")
+            return
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Usar o caminho completo ou apenas o nome
+        path_arquivo = str(Path("upload") / arquivo_nome)
+        
+        cursor.execute("""
+            INSERT INTO registo_resultados (time_stamp, path_nome_arquivo, resultado, causa)
+            VALUES (?, ?, ?, ?)
+        """, (datetime.now(), path_arquivo, resultado, causa))
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao registrar resultado: {e}")
 
-with col2:
-    if st.button("🔄 Limpar Estado", use_container_width=True, help="Limpa histórico da sessão"):
-        st.session_state.arquivos_processados = set()
-        st.session_state.ultimo_modo = None
-        show_success("Estado limpo! Pronto para novo processamento.")
-        st.rerun()
 
-st.markdown("---")
+def validate_xml_structure(content: bytes) -> tuple:
+    """
+    Valida estrutura XML
+    Retorna: (is_valid: bool, message: str, root: Element or None)
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        
+        xml_str = content.decode('utf-8', errors='ignore')
+        root = ET.fromstring(xml_str)
+        
+        if len(xml_str) < 100:
+            return (False, 'XML muito pequeno (possivelmente corrompido)', None)
+        
+        if not root.tag:
+            return (False, 'XML sem tag raiz', None)
+        
+        return (True, 'XML válido', root)
+        
+    except ET.ParseError as e:
+        return (False, f'XML mal formado: {str(e)}', None)
+    except UnicodeDecodeError:
+        return (False, 'Encoding inválido (não é UTF-8)', None)
+    except Exception as e:
+        return (False, f'Erro ao validar XML: {str(e)}', None)
 
-# Modos de upload
-st.markdown("### 📥 Escolha o Modo de Processamento")
 
-modo = st.radio(
-    "Selecione uma opção:",
-    ["📤 Upload Manual (Arrastar/Selecionar)", 
-     "📂 Processar Pasta /entrados (Batch)"],
-    help="Upload manual: processa imediatamente. Batch: processa todos da pasta.",
-    key="modo_upload"
-)
+def extract_chave_acesso_from_root(root) -> str:
+    """Extrai chave de acesso de um elemento XML já parseado"""
+    try:
+        for elem in root.iter():
+            if 'chNFe' in elem.tag or 'chave' in elem.tag.lower():
+                if elem.text and len(elem.text) == 44:
+                    return elem.text
+        
+        for elem in root.iter():
+            if 'Id' in elem.attrib:
+                id_val = elem.attrib['Id']
+                if 'NFe' in id_val:
+                    chave = id_val.replace('NFe', '')
+                    if len(chave) == 44 and chave.isdigit():
+                        return chave
+        
+        return None
+    except:
+        return None
 
-# Detectar mudança de modo
-if st.session_state.ultimo_modo and st.session_state.ultimo_modo != modo:
-    st.session_state.arquivos_processados = set()
-    show_info("Modo alterado. Estado limpo automaticamente.")
 
-st.session_state.ultimo_modo = modo
+def check_duplicate_by_chave(chave_acesso: str) -> tuple:
+    """
+    Verifica se chave já existe na BD usando SQLite direto
+    Retorna: (is_duplicate: bool, existing_file: str)
+    """
+    if not chave_acesso:
+        return (False, None)
+    
+    try:
+        db_path = get_db_path()
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT path_nome_arquivo FROM docs_para_erp WHERE chave_acesso = ?",
+            (chave_acesso,)
+        )
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            existing_file = Path(result[0]).name if result[0] else "desconhecido"
+            return (True, existing_file)
+        return (False, None)
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao verificar duplicado: {e}")
+        return (False, None)
 
-st.markdown("---")
 
-# ==================== MODO 1: Upload Manual ====================
-if modo == "📤 Upload Manual (Arrastar/Selecionar)":
-    st.markdown("### 📤 Upload de Arquivos XML")
+def extract_xml_from_zip(zip_file) -> list:
+    """Extrai XMLs de um ZIP - retorna [(filename, content)]"""
+    xml_files = []
+    
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_file.read())) as z:
+            for filename in z.namelist():
+                if filename.startswith('__MACOSX') or filename.startswith('.'):
+                    continue
+                if filename.lower().endswith('.xml'):
+                    content = z.read(filename)
+                    xml_files.append((filename, content))
+        return xml_files
+    except zipfile.BadZipFile:
+        st.error("❌ Ficheiro ZIP inválido ou corrompido")
+        return []
+    except Exception as e:
+        st.error(f"❌ Erro ao extrair ZIP: {e}")
+        return []
+
+
+# ==================== INFO SOBRE TIPOS SUPORTADOS ====================
+
+with st.expander("ℹ️ Tipos de Documentos Suportados"):
+    st.markdown("""
+    **Atualmente (MVP):**
+    - ✅ **NFe Brasil** (Formato XML padrão)
+    
+    **Em Breve:**
+    - 🔜 NFe Portugal
+    - 🔜 SAF-T
+    """)
+
+st.write("---")
+
+# ==================== TABS DE UPLOAD ====================
+
+tab1, tab2 = st.tabs(["📄 Upload de Ficheiros XML", "📦 Upload de ZIP"])
+
+# ==================== TAB 1: Upload Individual ====================
+
+with tab1:
+    st.subheader("📄 Upload de Ficheiros XML")
+    
+    st.info("💡 Selecione até 20 ficheiros XML. Sistema deteta duplicados automaticamente.")
     
     uploaded_files = st.file_uploader(
-        "Arraste arquivos XML ou clique para selecionar",
-        type=['xml'],
+        "Selecione ficheiros NFe (XML)",
+        type=["xml"],
         accept_multiple_files=True,
-        help="Você pode selecionar múltiplos arquivos XML",
-        key="file_uploader"
+        help="Máximo 20 ficheiros",
+        key="xml_uploader"
     )
     
+    if uploaded_files and len(uploaded_files) > 20:
+        st.error(f"❌ Limite de 20 ficheiros excedido! Selecionou {len(uploaded_files)}.")
+        st.info("💡 Use upload ZIP para lotes maiores")
+        uploaded_files = None
+    
     if uploaded_files:
-        # Filtrar arquivos já processados NESTA SESSÃO
-        novos_arquivos = [
-            f for f in uploaded_files 
-            if f.name not in st.session_state.arquivos_processados
-        ]
+        st.success(f"✅ **{len(uploaded_files)} ficheiro(s)** carregado(s)")
         
-        if not novos_arquivos:
-            st.warning("⚠️ Todos os arquivos selecionados já foram processados nesta sessão.")
-            st.info("💡 Use o botão 'Limpar Estado' para reprocessar ou selecione novos arquivos.")
-        else:
-            show_success(f"{len(novos_arquivos)} arquivo(s) NOVO(S) carregado(s)")
+        with st.expander("📋 Ver lista de ficheiros"):
+            for i, file in enumerate(uploaded_files, 1):
+                size_mb = len(file.getvalue()) / (1024 * 1024)
+                st.write(f"{i}. **{file.name}** ({size_mb:.2f} MB)")
+        
+        col1, col2 = st.columns([3, 1])
+        
+        with col2:
+            process_btn = st.button("🚀 Processar", type="primary", use_container_width=True, key="btn_xml")
+        
+        if process_btn:
+            st.write("---")
+            st.subheader("🔄 Processamento em Curso")
             
-            if len(uploaded_files) > len(novos_arquivos):
-                st.warning(f"⚠️ {len(uploaded_files) - len(novos_arquivos)} arquivo(s) já processado(s) nesta sessão - ignorados")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            # Mostrar apenas NOVOS arquivos
-            with st.expander("📋 Arquivos NOVOS a Processar", expanded=True):
-                for file in novos_arquivos:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.text(f"📄 {file.name}")
-                    with col2:
-                        st.text(f"{file.size / 1024:.1f} KB")
+            processor = NFeProcessor()
+            resultados = []
             
-            st.markdown("---")
-            
-            # Botão processar
-            if st.button("🚀 Processar Arquivos NOVOS", type="primary", use_container_width=True):
+            for idx, file in enumerate(uploaded_files):
+                status_text.text(f"Processando {idx+1}/{len(uploaded_files)}: {file.name}")
                 
-                with st.spinner('Processando arquivos...'):
-                    processor = NFeProcessor()
-                    resultados = []
+                content = file.read()
+                
+                # 1. Validar XML
+                is_valid, validation_msg, root = validate_xml_structure(content)
+                
+                if not is_valid:
+                    registrar_resultado_bd(file.name, 'ERRO', validation_msg)
                     
-                    # Barra de progresso
+                    resultados.append({
+                        'arquivo': file.name,
+                        'status': 'erro',
+                        'message': f'❌ {validation_msg}',
+                        'chave': None
+                    })
+                    file.seek(0)
+                    continue
+                
+                # 2. Extrair chave
+                chave = extract_chave_acesso_from_root(root)
+                
+                if not chave:
+                    registrar_resultado_bd(file.name, 'ERRO', 'Chave de acesso NFe não encontrada')
+                    
+                    resultados.append({
+                        'arquivo': file.name,
+                        'status': 'erro',
+                        'message': '❌ Chave de acesso NFe não encontrada',
+                        'chave': None
+                    })
+                    file.seek(0)
+                    continue
+                
+                # 3. Verificar duplicado
+                is_dup, existing_file = check_duplicate_by_chave(chave)
+                
+                if is_dup:
+                    registrar_resultado_bd(
+                        file.name, 
+                        'ERRO', 
+                        f'Duplicado - Chave já processada em: {existing_file}'
+                    )
+                    
+                    resultados.append({
+                        'arquivo': file.name,
+                        'status': 'duplicado',
+                        'message': f'Chave já processada no ficheiro: {existing_file}',
+                        'chave': chave
+                    })
+                    file.seek(0)
+                    continue
+                
+                # 4. Processar
+                try:
+                    file.seek(0)
+                    resultado = processor.process_uploaded_file(file, file.name)
+                    
+                    if resultado.get('success'):
+                        resultados.append({
+                            'arquivo': file.name,
+                            'status': 'sucesso',
+                            'message': 'Processado com sucesso',
+                            'chave': chave
+                        })
+                    else:
+                        msg_erro = resultado.get('message', 'Erro desconhecido')
+                        registrar_resultado_bd(file.name, 'ERRO', msg_erro)
+                        
+                        resultados.append({
+                            'arquivo': file.name,
+                            'status': 'erro',
+                            'message': msg_erro,
+                            'chave': chave
+                        })
+                except Exception as e:
+                    registrar_resultado_bd(file.name, 'ERRO', str(e))
+                    
+                    resultados.append({
+                        'arquivo': file.name,
+                        'status': 'erro',
+                        'message': str(e),
+                        'chave': chave
+                    })
+                
+                file.seek(0)
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Resultados
+            st.write("---")
+            st.subheader("📊 Resultados")
+            
+            total = len(resultados)
+            sucessos = sum(1 for r in resultados if r['status'] == 'sucesso')
+            duplicados = sum(1 for r in resultados if r['status'] == 'duplicado')
+            erros = sum(1 for r in resultados if r['status'] == 'erro')
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total", total)
+            col2.metric("✅ Sucesso", sucessos)
+            col3.metric("⚠️ Duplicados", duplicados)
+            col4.metric("❌ Erros", erros)
+            
+            st.write("### 📋 Detalhes")
+            
+            for res in resultados:
+                icon = "✅" if res['status'] == 'sucesso' else ("⚠️" if res['status'] == 'duplicado' else "❌")
+                expanded = res['status'] == 'erro'
+                
+                with st.expander(f"{icon} {res['arquivo']}", expanded=expanded):
+                    if res['status'] == 'sucesso':
+                        show_success("Processado com sucesso!")
+                        if res['chave']:
+                            st.caption(f"Chave: {res['chave']}")
+                    elif res['status'] == 'duplicado':
+                        st.warning("⚠️ Ficheiro duplicado")
+                        st.info(res['message'])
+                    else:
+                        show_error("Erro", res['message'])
+            
+            if sucessos == total:
+                st.success(f"🎉 Todos os {total} ficheiros processados!")
+            elif sucessos > 0:
+                st.warning(f"⚠️ {sucessos} de {total} processados.")
+
+
+# ==================== TAB 2: Upload ZIP ====================
+
+with tab2:
+    st.subheader("📦 Upload de Ficheiro ZIP")
+    
+    st.info("💡 ZIP pode conter até 50 ficheiros XML")
+    
+    zip_file = st.file_uploader(
+        "Selecione ZIP",
+        type=["zip"],
+        key="zip_uploader"
+    )
+    
+    if zip_file:
+        xml_files = extract_xml_from_zip(zip_file)
+        
+        if xml_files:
+            st.success(f"✅ ZIP com **{len(xml_files)} ficheiro(s) XML**")
+            
+            with st.expander("📋 Conteúdo"):
+                for i, (filename, content) in enumerate(xml_files, 1):
+                    st.write(f"{i}. {filename} ({len(content)/1024:.1f} KB)")
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col2:
+                process_zip_btn = st.button("🚀 Processar ZIP", type="primary", use_container_width=True, key="btn_zip")
+            
+            if process_zip_btn:
+                if len(xml_files) > 50:
+                    st.error(f"❌ ZIP contém {len(xml_files)} ficheiros. Limite: 50")
+                else:
+                    st.write("---")
+                    st.subheader("🔄 Processamento em Curso")
+                    
                     progress_bar = st.progress(0)
                     status_text = st.empty()
                     
-                    for idx, uploaded_file in enumerate(novos_arquivos):
-                        status_text.text(f"Processando {idx+1}/{len(novos_arquivos)}: {uploaded_file.name}")
+                    processor = NFeProcessor()
+                    resultados = []
+                    
+                    for idx, (filename, content) in enumerate(xml_files):
+                        status_text.text(f"Processando {idx+1}/{len(xml_files)}: {filename}")
                         
-                        # Processar
-                        resultado = processor.process_uploaded_file(uploaded_file, uploaded_file.name)
+                        # 1. Validar
+                        is_valid, validation_msg, root = validate_xml_structure(content)
                         
-                        resultados.append({
-                            'arquivo': uploaded_file.name,
-                            'resultado': resultado
-                        })
+                        if not is_valid:
+                            registrar_resultado_bd(filename, 'ERRO', validation_msg)
+                            
+                            resultados.append({
+                                'arquivo': filename,
+                                'status': 'erro',
+                                'message': f'❌ {validation_msg}',
+                                'chave': None
+                            })
+                            continue
                         
-                        # Marcar como processado NESTA SESSÃO
-                        st.session_state.arquivos_processados.add(uploaded_file.name)
+                        # 2. Extrair chave
+                        chave = extract_chave_acesso_from_root(root)
                         
-                        # Atualizar progresso
-                        progress_bar.progress((idx + 1) / len(novos_arquivos))
+                        if not chave:
+                            registrar_resultado_bd(filename, 'ERRO', 'Chave não encontrada')
+                            
+                            resultados.append({
+                                'arquivo': filename,
+                                'status': 'erro',
+                                'message': '❌ Chave não encontrada',
+                                'chave': None
+                            })
+                            continue
+                        
+                        # 3. Verificar duplicado
+                        is_dup, existing_file = check_duplicate_by_chave(chave)
+                        
+                        if is_dup:
+                            registrar_resultado_bd(
+                                filename,
+                                'ERRO',
+                                f'Duplicado - já processado em: {existing_file}'
+                            )
+                            
+                            resultados.append({
+                                'arquivo': filename,
+                                'status': 'duplicado',
+                                'message': f'Já processado em: {existing_file}',
+                                'chave': chave
+                            })
+                            continue
+                        
+                        # 4. Processar
+                        try:
+                            class FakeFile:
+                                def __init__(self, name, content):
+                                    self.name = name
+                                    self._content = content
+                                    self._pos = 0
+                                def read(self, size=-1):
+                                    if size == -1:
+                                        result = self._content[self._pos:]
+                                        self._pos = len(self._content)
+                                    else:
+                                        result = self._content[self._pos:self._pos + size]
+                                        self._pos += size
+                                    return result
+                                def seek(self, pos, whence=0):
+                                    if whence == 0:
+                                        self._pos = pos
+                                    elif whence == 1:
+                                        self._pos += pos
+                                    elif whence == 2:
+                                        self._pos = len(self._content) + pos
+                                    return self._pos
+                                def tell(self):
+                                    return self._pos
+                                def getvalue(self):
+                                    return self._content
+                                def getbuffer(self):
+                                    return memoryview(self._content)
+                                @property
+                                def size(self):
+                                    return len(self._content)
+                            
+                            fake_file = FakeFile(filename, content)
+                            resultado = processor.process_uploaded_file(fake_file, filename)
+                            
+                            if resultado.get('success'):
+                                resultados.append({
+                                    'arquivo': filename,
+                                    'status': 'sucesso',
+                                    'message': 'Processado',
+                                    'chave': chave
+                                })
+                            else:
+                                msg_erro = resultado.get('message', 'Erro')
+                                registrar_resultado_bd(filename, 'ERRO', msg_erro)
+                                
+                                resultados.append({
+                                    'arquivo': filename,
+                                    'status': 'erro',
+                                    'message': msg_erro,
+                                    'chave': chave
+                                })
+                        except Exception as e:
+                            registrar_resultado_bd(filename, 'ERRO', str(e))
+                            
+                            resultados.append({
+                                'arquivo': filename,
+                                'status': 'erro',
+                                'message': str(e),
+                                'chave': chave
+                            })
+                        
+                        progress_bar.progress((idx + 1) / len(xml_files))
                     
                     progress_bar.empty()
                     status_text.empty()
                     
-                    # Mostrar resultados
-                    st.markdown("### 📊 Resultados do Processamento")
+                    # Resultados
+                    st.write("---")
+                    st.subheader("📊 Resultados")
                     
-                    sucessos = sum(1 for r in resultados if r['resultado'].get('success'))
-                    duplicados = sum(1 for r in resultados if r['resultado'].get('duplicado'))
-                    erros = len(resultados) - sucessos - duplicados
+                    total = len(resultados)
+                    sucessos = sum(1 for r in resultados if r['status'] == 'sucesso')
+                    duplicados = sum(1 for r in resultados if r['status'] == 'duplicado')
+                    erros = sum(1 for r in resultados if r['status'] == 'erro')
                     
                     col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Total", len(resultados))
-                    with col2:
-                        st.metric("✅ Sucessos", sucessos)
-                    with col3:
-                        st.metric("⚠️ Duplicados", duplicados)
-                    with col4:
-                        st.metric("❌ Erros", erros)
+                    col1.metric("Total", total)
+                    col2.metric("✅ Sucesso", sucessos)
+                    col3.metric("⚠️ Duplicados", duplicados)
+                    col4.metric("❌ Erros", erros)
                     
-                    # Detalhes
-                    for resultado in resultados:
-                        res = resultado['resultado']
+                    st.write("### 📋 Detalhes")
+                    
+                    for res in resultados:
+                        icon = "✅" if res['status'] == 'sucesso' else ("⚠️" if res['status'] == 'duplicado' else "❌")
+                        expanded = res['status'] == 'erro'
                         
-                        if res.get('duplicado'):
-                            icon = "⚠️"
-                            expanded = False
-                        elif res.get('success'):
-                            icon = "✅"
-                            expanded = False
-                        else:
-                            icon = "❌"
-                            expanded = True
-                        
-                        with st.expander(f"{icon} {resultado['arquivo']}", expanded=expanded):
-                            if res.get('success'):
-                                show_success("Processado com sucesso!", "Movido para: /processados")
-                            elif res.get('duplicado'):
-                                st.warning(f"⚠️ Arquivo duplicado: {res.get('message')}")
-                                st.info("💡 Este arquivo já existe no banco de dados")
+                        with st.expander(f"{icon} {res['arquivo']}", expanded=expanded):
+                            if res['status'] == 'sucesso':
+                                show_success("Processado!")
+                            elif res['status'] == 'duplicado':
+                                st.warning("⚠️ Duplicado")
+                                st.info(res['message'])
                             else:
-                                show_error("Erro no processamento", res.get('message', 'Erro desconhecido'))
+                                show_error("Erro", res['message'])
 
-# ==================== MODO 2: Batch ====================
-else:
-    st.markdown("### 📂 Processamento em Lote (Batch)")
-    
-    # Inicializar processor
-    processor = NFeProcessor()
-    
-    # Usar método inteligente que filtra duplicados
-    arquivos_novos = processor.file_handler.get_arquivos_entrados()
-    
-    if arquivos_novos:
-        # CORREÇÃO: Removido "XML" da mensagem
-        show_info(f"Encontrados {len(arquivos_novos)} arquivo(s) na pasta /entrados")
-        
-        with st.expander("📋 Arquivos Encontrados", expanded=True):
-            for arquivo in arquivos_novos:
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    # Mostrar ícone baseado na extensão
-                    ext = arquivo.suffix.lower()
-                    if ext == '.xml':
-                        icon = "📄"
-                    else:
-                        icon = "⚠️"
-                    st.text(f"{icon} {arquivo.name}")
-                with col2:
-                    st.text(ext)
-        
-        st.markdown("---")
-        
-        if st.button("🚀 Processar Arquivos", type="primary", use_container_width=True):
-            with st.spinner('Processando arquivos em lote...'):
-                resultado_batch = processor.process_batch()
-                
-                if resultado_batch['success']:
-                    st.markdown("### 📊 Resultados do Processamento")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total", resultado_batch['total'])
-                    with col2:
-                        st.metric("✅ Sucessos", resultado_batch['processados'])
-                    with col3:
-                        st.metric("❌ Erros", resultado_batch['erros'])
-                    
-                    # Detalhes
-                    if 'resultados' in resultado_batch:
-                        for resultado in resultado_batch['resultados']:
-                            arquivo_nome = Path(resultado.get('file', 'desconhecido')).name
-                            
-                            icon = "✅" if resultado.get('success') else "❌"
-                            expanded = not resultado.get('success')
-                            
-                            with st.expander(f"{icon} {arquivo_nome}", expanded=expanded):
-                                if resultado.get('success'):
-                                    show_success("Processado com sucesso!")
-                                else:
-                                    show_error("Erro no processamento", resultado.get('message', 'Erro desconhecido'))
-                    
-                    show_success("✅ Processamento em lote concluído!")
-    
-    else:
-        st.warning("⚠️ Nenhum arquivo encontrado na pasta /entrados")
-        st.info("💡 A pasta está vazia ou todos os arquivos já foram processados")
 
-# ==================== STATUS DA SESSÃO ====================
-if st.session_state.arquivos_processados:
-    with st.expander("📊 Status da Sessão Atual", expanded=False):
-        st.markdown(f"""
-        **Arquivos processados nesta sessão:** {len(st.session_state.arquivos_processados)}
-        
-        **Arquivos:**
-        """)
-        for arquivo in sorted(st.session_state.arquivos_processados):
-            st.text(f"✅ {arquivo}")
+# ==================== SIDEBAR ====================
 
-# Informações adicionais
-st.markdown("---")
-st.markdown("### ℹ️ Informações")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown("""
-    #### 📝 Formatos Suportados
-    - ✅ **XML** - Notas Fiscais Eletrônicas (NFe)
-    - ⏳ PDF - Em desenvolvimento
-    - ⏳ Imagens - Em desenvolvimento
-    
-    #### 🔍 Proteções Anti-Duplicação
-    - Verifica duplicados no banco de dados
-    - Bloqueia reprocessamento na sessão
-    - Evita salvar arquivos duplicados
-    - Mantém histórico no BD
-    """)
-
-with col2:
-    st.markdown("""
-    #### 📊 Após Processamento
-    - Dados salvos no banco
-    - Disponíveis para análise
-    - Prontos para integração ERP
-    - Arquivos movidos automaticamente
-    
-    #### 🤖 Validações Automáticas
-    - Extensão do arquivo
-    - Estrutura XML válida
-    - Chave de acesso NFe
-    - Duplicados no banco
-    """)
+with st.sidebar:
+    st.header("ℹ️ Informação")
+    st.write("**Limites:**")
+    st.write("- Ficheiros XML: 20")
+    st.write("- ZIP: 50 ficheiros")
+    st.write("---")
+    st.write("**Deteção:**")
+    st.write("✅ Por chave de acesso")
+    st.write("✅ Validação XML")
+    st.write("✅ Registo completo na BD")
