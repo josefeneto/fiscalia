@@ -110,13 +110,13 @@ def to_excel(df: pd.DataFrame) -> bytes:
 
 
 def format_currency(value) -> str:
-    """Formata valor monetário"""
+    """Formata valor monetário em Reais (R$)"""
     try:
         if pd.isna(value):
-            return "€ 0,00"
-        return f"€ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return "R$ 0,00"
+        return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except:
-        return "€ 0,00"
+        return "R$ 0,00"
 
 
 # ==================== FILTRO DE PERÍODO GLOBAL ====================

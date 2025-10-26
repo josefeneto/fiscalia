@@ -81,13 +81,13 @@ def load_stats_data(data_inicio: str, data_fim: str) -> pd.DataFrame:
 
 
 def format_currency(value) -> str:
-    """Formata valor monetário"""
+    """Formata valor monetário em Reais (R$)"""
     try:
         if pd.isna(value):
-            return "€ 0,00"
-        return f"€ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return "R$ 0,00"
+        return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except:
-        return "€ 0,00"
+        return "R$ 0,00"
 
 
 def format_number(value) -> str:
@@ -155,7 +155,7 @@ with col3:
         valor_medio = df['valor_total'].mean()
         st.metric("📊 Valor Médio", format_currency(valor_medio))
     else:
-        st.metric("📊 Valor Médio", "€ 0,00")
+        st.metric("📊 Valor Médio", "R$ 0,00")
 
 with col4:
     if 'erp_processado' in df.columns:
@@ -301,10 +301,10 @@ with col1:
             'numero_nf': 'count'
         }).reset_index()
         
-        df_emit.columns = ['Emitente', 'Valor Total (€)', 'Qtd Docs']
-        df_emit = df_emit.sort_values('Valor Total (€)', ascending=False).head(10)
+        df_emit.columns = ['Emitente', 'Valor Total (R$)', 'Qtd Docs']
+        df_emit = df_emit.sort_values('Valor Total (R$)', ascending=False).head(10)
         
-        df_emit['Valor Total'] = df_emit['Valor Total (€)'].apply(format_currency)
+        df_emit['Valor Total'] = df_emit['Valor Total (R$)'].apply(format_currency)
         df_emit = df_emit[['Emitente', 'Valor Total', 'Qtd Docs']]
         
         st.dataframe(df_emit, width="stretch", hide_index=True, height=400)
@@ -320,10 +320,10 @@ with col2:
             'numero_nf': 'count'
         }).reset_index()
         
-        df_dest.columns = ['Destinatário', 'Valor Total (€)', 'Qtd Docs']
-        df_dest = df_dest.sort_values('Valor Total (€)', ascending=False).head(10)
+        df_dest.columns = ['Destinatário', 'Valor Total (R$)', 'Qtd Docs']
+        df_dest = df_dest.sort_values('Valor Total (R$)', ascending=False).head(10)
         
-        df_dest['Valor Total'] = df_dest['Valor Total (€)'].apply(format_currency)
+        df_dest['Valor Total'] = df_dest['Valor Total (R$)'].apply(format_currency)
         df_dest = df_dest[['Destinatário', 'Valor Total', 'Qtd Docs']]
         
         st.dataframe(df_dest, width="stretch", hide_index=True, height=400)

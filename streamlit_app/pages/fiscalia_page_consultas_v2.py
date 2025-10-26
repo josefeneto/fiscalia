@@ -70,7 +70,6 @@ def get_db():
     """Retorna instância do DatabaseManager (cria BD automaticamente)"""
     return DatabaseManager()
 
-
 def executar_query(query: str) -> pd.DataFrame:
     """Executa query SQL e retorna DataFrame"""
     try:
@@ -89,16 +88,50 @@ def executar_query(query: str) -> pd.DataFrame:
         st.error(f"❌ Erro ao executar consulta: {e}")
         return pd.DataFrame()
 
-
 def format_currency(value) -> str:
-    """Formata valor monetário"""
+    """Formata valor monetário em Reais (R$)"""
     try:
         if pd.isna(value):
-            return "€ 0,00"
-        return f"€ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return "R$ 0,00"
+        return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except:
-        return "€ 0,00"
+        return "R$ 0,00"
 
+def criar_botoes_exportacao(df: pd.DataFrame, prefixo: str = "consulta"):
+    """
+    Cria botões de exportação para CSV e Excel
+    """
+    from io import BytesIO
+    
+    st.markdown("#### 📥 Exportar Resultados")
+    col_exp1, col_exp2 = st.columns(2)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    with col_exp1:
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Baixar CSV",
+            data=csv,
+            file_name=f"{prefixo}_{timestamp}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    with col_exp2:
+        # Exportar para Excel
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Resultados')
+        buffer.seek(0)
+        
+        st.download_button(
+            label="📥 Baixar Excel",
+            data=buffer,
+            file_name=f"{prefixo}_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -> tuple:
     """
@@ -488,7 +521,6 @@ O sistema está funcionando perfeitamente! 🎉"""
     # Pergunta não reconhecida
     return None, "❓ **Pergunta não reconhecida.** Por favor, reformule ou escolha uma das sugestões abaixo.", pd.DataFrame()
 
-
 # ==================== TABS PRINCIPAIS ====================
 
 tab1, tab2 = st.tabs(["🎯 Perguntas em Linguagem Natural", "💻 Consultas SQL Diretas"])
@@ -627,14 +659,8 @@ with tab1:
                             )
                             st.plotly_chart(fig, width="stretch")
                         
-                        # Botão de exportação
-                        csv = df_resultado.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="📥 Baixar Resultados (CSV)",
-                            data=csv,
-                            file_name=f"consulta_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv"
-                        )
+                        # Botões de exportação
+                        criar_botoes_exportacao(df_resultado, "consulta_botao")
                     
                     # Mostrar SQL usado (opcional)
                     with st.expander("🔍 Ver SQL Gerado"):
@@ -683,14 +709,8 @@ with tab1:
                             )
                             st.plotly_chart(fig, width="stretch")
                         
-                        # Botão de exportação
-                        csv = df_resultado.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="📥 Baixar Resultados (CSV)",
-                            data=csv,
-                            file_name=f"consulta_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv"
-                        )
+                        # Botões de exportação
+                        criar_botoes_exportacao(df_resultado, "consulta_natural")
                     
                     # Mostrar SQL usado (opcional)
                     with st.expander("🔍 Ver SQL Gerado"):
@@ -807,14 +827,8 @@ with tab2:
                     
                     st.dataframe(df_result, width="stretch", hide_index=True, height=500)
                     
-                    # Exportação
-                    csv = df_result.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Baixar CSV",
-                        data=csv,
-                        file_name=f"sql_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
+                    # Botões de exportação
+                    criar_botoes_exportacao(df_result, "sql_result")
                 else:
                     st.warning("⚠️ Nenhum resultado encontrado")
         else:
