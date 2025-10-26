@@ -170,7 +170,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df
     
     # PERGUNTA 6: Por destinatário
-    if any(word in pergunta_lower for word in ['destinatário', 'destinatarios', 'cliente', 'clientes', 'top destina']):
+    if any(word in pergunta_lower for word in ['destinatário', 'destinatarios', 'destinatário', 'cliente', 'clientes', 'top destina', 'top 10 destina', 'quais os top']):
         query = f"""
         SELECT 
             razao_social_destinatario as 'Destinatário',
@@ -214,7 +214,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df_display
     
     # PERGUNTA 8: Por estado/UF
-    if any(word in pergunta_lower for word in ['estado', 'estados', 'uf', 'distribuição', 'distribui', 'por estado', 'quais estados', 'geográfica', 'geografica']):
+    if any(word in pergunta_lower for word in ['estado', 'estados', 'uf', 'distribuição', 'distribui', 'por estado', 'quais estados', 'geográfica', 'geografica', 'qual a distribui']):
         query = f"""
         SELECT 
             uf_emitente as 'UF',
@@ -295,7 +295,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df_display
     
     # PERGUNTA 12: Por município
-    if any(word in pergunta_lower for word in ['município', 'municipio', 'cidade', 'cidades']):
+    if any(word in pergunta_lower for word in ['município', 'municipio', 'cidade', 'cidades', 'municípios', 'municipios', 'quais os top', 'top 20 munic', 'top munic']):
         query = f"""
         SELECT 
             municipio_emitente as 'Município',
@@ -316,7 +316,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df_display
     
     # PERGUNTA 13: Evolução temporal
-    if any(word in pergunta_lower for word in ['evolução', 'evolucao', 'temporal', 'mês', 'mes', 'mensal', 'diária', 'diaria']):
+    if any(word in pergunta_lower for word in ['evolução', 'evolucao', 'temporal', 'mês', 'mes', 'mensal', 'diária', 'diaria', 'qual a evolu', 'qual evolu']):
         query = f"""
         SELECT 
             strftime('%Y-%m', data_emissao) as 'Mês',
