@@ -12,13 +12,46 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from sqlalchemy import text
+import os
+import warnings
 
-# Adicionar src ao path
-root_path = Path(__file__).parent.parent
-sys.path.insert(0, str(root_path))
+# Suprimir TODOS os warnings de deprecation
+warnings.filterwarnings('ignore')
+import logging
+logging.getLogger('streamlit').setLevel(logging.ERROR)
 
-from src.database.db_manager import DatabaseManager
-from streamlit_app.components.common import show_header, show_success, show_error, show_info
+# Adicionar src ao path de forma robusta
+current_file = Path(__file__).resolve()
+root_path = current_file.parent.parent
+src_path = root_path / 'src'
+
+# Adicionar ambos ao path se não existirem
+for path in [str(root_path), str(src_path)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Agora importar
+try:
+    from src.database.db_manager import DatabaseManager
+    from streamlit_app.components.common import show_header, show_success, show_error, show_info
+except ImportError:
+    # Fallback se estiver em ambiente diferente
+    import importlib.util
+    db_manager_path = root_path / 'src' / 'database' / 'db_manager.py'
+    if db_manager_path.exists():
+        spec = importlib.util.spec_from_file_location("db_manager", db_manager_path)
+        db_manager = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(db_manager)
+        DatabaseManager = db_manager.DatabaseManager
+    
+    # Fallback para components
+    def show_header(title, subtitle=""):
+        st.title(title)
+        if subtitle:
+            st.caption(subtitle)
+    def show_success(msg): st.success(msg)
+    def show_error(msg): st.error(msg)
+    def show_info(msg): st.info(msg)
 
 # Configuração
 st.set_page_config(
@@ -170,7 +203,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df
     
     # PERGUNTA 6: Por destinatário
-    if any(word in pergunta_lower for word in ['destinatário', 'destinatarios', 'destinatário', 'cliente', 'clientes', 'top destina', 'top 10 destina', 'quais os top']):
+    if any(word in pergunta_lower for word in ['destinatário', 'destinatarios', 'destinatário', 'cliente', 'clientes', 'top destina', 'top 10 destina', 'destinat']):
         query = f"""
         SELECT 
             razao_social_destinatario as 'Destinatário',
@@ -192,7 +225,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df_display
     
     # PERGUNTA 7: Por emitente/fornecedor
-    if any(word in pergunta_lower for word in ['emitente', 'emitentes', 'fornecedor', 'fornecedores', 'top emit']):
+    if any(word in pergunta_lower for word in ['emitente', 'emitentes', 'fornecedor', 'fornecedores', 'top emit', 'top 10 emit', 'emit']):
         query = f"""
         SELECT 
             razao_social_emitente as 'Emitente',
@@ -233,6 +266,81 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             df_display = df[['UF', 'Quantidade', 'Valor Total', 'Valor Médio']]
             resposta = "🗺️ **Distribuição por Estado:**"
             return query, resposta, df_display
+    
+    # PERGUNTA 8.5: ERROS / PROBLEMAS / VALIDAÇÃO (NOVA - INTELIGENTE)
+    palavras_erros = ['errado', 'errada', 'errados', 'erradas', 'erro', 'erros', 'problema', 'problemas',
+                      'invalido', 'invalida', 'inválido', 'inválida', 'incorreto', 'incorreta',
+                      'suspeito', 'suspeita', 'anormal', 'anomalia', 'anomalias', 'inconsistente',
+                      'inconsistência', 'inconsistencia', 'verificar', 'validar', 'checar', 'revisar',
+                      'corrigir', 'correcao', 'correção', 'falha', 'falhas', 'defeito', 'defeitos',
+                      'irregular', 'irregularidade', 'irregularidades', 'criticar', 'crítico', 'critico']
+    
+    if any(palavra in pergunta_lower for palavra in palavras_erros):
+        # Query que verifica MÚLTIPLOS tipos de problemas
+        query = f"""
+        SELECT 
+            'Valores Zerados' as 'Tipo de Problema',
+            COUNT(*) as 'Quantidade'
+        FROM docs_para_erp
+        WHERE {filtro_periodo} AND valor_total = 0
+        UNION ALL
+        SELECT 
+            'Valores Negativos' as 'Tipo de Problema',
+            COUNT(*) as 'Quantidade'
+        FROM docs_para_erp
+        WHERE {filtro_periodo} AND valor_total < 0
+        UNION ALL
+        SELECT 
+            'Sem Emitente' as 'Tipo de Problema',
+            COUNT(*) as 'Quantidade'
+        FROM docs_para_erp
+        WHERE {filtro_periodo} AND (razao_social_emitente IS NULL OR razao_social_emitente = '')
+        UNION ALL
+        SELECT 
+            'Sem Destinatário' as 'Tipo de Problema',
+            COUNT(*) as 'Quantidade'
+        FROM docs_para_erp
+        WHERE {filtro_periodo} AND (razao_social_destinatario IS NULL OR razao_social_destinatario = '')
+        UNION ALL
+        SELECT 
+            'Notas Duplicadas' as 'Tipo de Problema',
+            COUNT(*) as 'Quantidade'
+        FROM (
+            SELECT numero_nf, serie
+            FROM docs_para_erp
+            WHERE {filtro_periodo}
+            GROUP BY numero_nf, serie
+            HAVING COUNT(*) > 1
+        )
+        UNION ALL
+        SELECT 
+            'Valores Muito Altos (>R$ 1Mi)' as 'Tipo de Problema',
+            COUNT(*) as 'Quantidade'
+        FROM docs_para_erp
+        WHERE {filtro_periodo} AND valor_total > 1000000
+        """
+        df = executar_query(query)
+        
+        if not df.empty:
+            # Filtrar apenas problemas reais (quantidade > 0)
+            df_problemas = df[df['Quantidade'] > 0]
+            
+            if not df_problemas.empty:
+                total_problemas = int(df_problemas['Quantidade'].sum())
+                resposta = f"⚠️ **Análise de Problemas nas Notas Fiscais:**\n\n**Total de problemas detectados: {total_problemas}**\n\nDetalhes abaixo:"
+                return query, resposta, df_problemas
+            else:
+                resposta = """✅ **Análise Completa: Nenhum Problema Detectado!**
+
+Todas as notas fiscais estão corretas:
+- ✅ Sem valores zerados ou negativos
+- ✅ Todos os campos preenchidos corretamente
+- ✅ Sem notas duplicadas
+- ✅ Valores dentro da normalidade
+- ✅ Dados consistentes e válidos
+
+O sistema está funcionando perfeitamente! 🎉"""
+                return query, resposta, pd.DataFrame()
     
     # PERGUNTA 9: Duplicados
     if any(word in pergunta_lower for word in ['duplicado', 'duplicadas', 'repetido', 'repetidas']):
@@ -295,7 +403,7 @@ def processar_pergunta_natural(pergunta: str, data_inicio: str, data_fim: str) -
             return query, resposta, df_display
     
     # PERGUNTA 12: Por município
-    if any(word in pergunta_lower for word in ['município', 'municipio', 'cidade', 'cidades', 'municípios', 'municipios', 'quais os top', 'top 20 munic', 'top munic']):
+    if any(word in pergunta_lower for word in ['município', 'municipio', 'cidade', 'cidades', 'municípios', 'municipios', 'top 20 munic', 'top munic', 'munic']):
         query = f"""
         SELECT 
             municipio_emitente as 'Município',
@@ -395,12 +503,12 @@ with tab1:
     col1, col2, col3 = st.columns([1, 1, 2])
     
     with col1:
-        # Default: mês corrente
+        # Default: início do ano corrente
         hoje = datetime.now()
-        primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
+        inicio_ano = datetime(hoje.year, 1, 1)
         data_inicio = st.date_input(
             "Data Início:",
-            value=primeiro_dia_mes,
+            value=inicio_ano,
             key="data_inicio_ln"
         )
     
@@ -412,7 +520,8 @@ with tab1:
         )
     
     with col3:
-        st.info(f"📊 Período selecionado: {(data_fim - data_inicio).days} dias")
+        dias_selecionados = (data_fim - data_inicio).days
+        st.info(f"📊 Período: {dias_selecionados} dias ({data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')})")
     
     st.markdown("---")
     
@@ -470,18 +579,18 @@ with tab1:
                 pergunta_do_botao = "Quais os top 10 destinatários?"
         
         with col2:
-            if st.button("🗺️ Por estado?", key="ex4"):
+            if st.button("📤 Top emitentes?", key="ex4"):
+                pergunta_do_botao = "Quais os top 10 emitentes?"
+            if st.button("🗺️ Por estado?", key="ex5"):
                 pergunta_do_botao = "Qual a distribuição por estado?"
-            if st.button("💸 Descontos?", key="ex5"):
-                pergunta_do_botao = "Qual o total de descontos?"
-            if st.button("📈 Estatísticas?", key="ex6"):
-                pergunta_do_botao = "Qual a média, mínimo e máximo?"
+            if st.button("🏙️ Por município?", key="ex6"):
+                pergunta_do_botao = "Quais os top 20 municípios?"
         
         with col3:
-            if st.button("📅 Evolução temporal?", key="ex7"):
-                pergunta_do_botao = "Qual a evolução temporal?"
-            if st.button("🏙️ Por município?", key="ex8"):
-                pergunta_do_botao = "Quais os top 20 municípios?"
+            if st.button("💸 Descontos?", key="ex7"):
+                pergunta_do_botao = "Qual o total de descontos?"
+            if st.button("📈 Estatísticas?", key="ex8"):
+                pergunta_do_botao = "Qual a média, mínimo e máximo?"
             if st.button("⚠️ Duplicados?", key="ex9"):
                 pergunta_do_botao = "Há notas duplicadas?"
         
@@ -505,7 +614,7 @@ with tab1:
                     # Mostrar DataFrame se houver
                     if not df_resultado.empty:
                         st.markdown("#### 📊 Dados Detalhados")
-                        st.dataframe(df_resultado, use_container_width=True, hide_index=True, height=400)
+                        st.dataframe(df_resultado, width="stretch", hide_index=True, height=400)
                         
                         # Gráfico se for numérico
                         if len(df_resultado) > 1 and 'valor_total' in df_resultado.columns:
@@ -516,7 +625,7 @@ with tab1:
                                 y='valor_total',
                                 title='Distribuição de Valores'
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                         
                         # Botão de exportação
                         csv = df_resultado.to_csv(index=False).encode('utf-8')
@@ -544,7 +653,7 @@ with tab1:
         key="pergunta_area"
     )
     
-    if st.button("🚀 Processar Pergunta", type="primary", use_container_width=True, key="btn_ln"):
+    if st.button("🚀 Processar Pergunta", type="primary", width="stretch", key="btn_ln"):
         if pergunta_natural:
             with st.spinner("🤔 Processando sua pergunta..."):
                 query, resposta, df_resultado = processar_pergunta_natural(
@@ -561,7 +670,7 @@ with tab1:
                     # Mostrar DataFrame se houver
                     if not df_resultado.empty:
                         st.markdown("#### 📊 Dados Detalhados")
-                        st.dataframe(df_resultado, use_container_width=True, hide_index=True, height=400)
+                        st.dataframe(df_resultado, width="stretch", hide_index=True, height=400)
                         
                         # Gráfico se for numérico
                         if len(df_resultado) > 1 and 'valor_total' in df_resultado.columns:
@@ -572,7 +681,7 @@ with tab1:
                                 y='valor_total',
                                 title='Distribuição de Valores'
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
                         
                         # Botão de exportação
                         csv = df_resultado.to_csv(index=False).encode('utf-8')
@@ -617,24 +726,26 @@ with tab2:
         -- Documentos de São Paulo
         SELECT * FROM docs_para_erp 
         WHERE uf_emitente = 'SP' 
-        LIMIT 50;
+        LIMIT 50
         
         -- Valores acima de 10.000
         SELECT numero_nf, razao_social_emitente, valor_total 
         FROM docs_para_erp 
         WHERE valor_total > 10000 
-        ORDER BY valor_total DESC;
+        ORDER BY valor_total DESC
+        LIMIT 100
         
         -- Por período
         SELECT * FROM docs_para_erp 
         WHERE data_emissao BETWEEN '2024-01-01' AND '2024-12-31'
-        ORDER BY data_emissao DESC;
+        ORDER BY data_emissao DESC
+        LIMIT 100
         
         -- Agregação por UF
         SELECT uf_emitente, COUNT(*) as qtd, SUM(valor_total) as total
         FROM docs_para_erp 
         GROUP BY uf_emitente 
-        ORDER BY total DESC;
+        ORDER BY total DESC
         ```
         """)
     
@@ -657,8 +768,21 @@ with tab2:
         
         validar_sql = st.checkbox("Validar SQL", value=True, help="Verifica se é apenas SELECT")
     
-    if st.button("🚀 Executar SQL", type="primary", use_container_width=True, key="btn_sql"):
+    if st.button("🚀 Executar SQL", type="primary", width="stretch", key="btn_sql"):
         if consulta_sql:
+            # Limpar SQL: remover ponto-e-vírgula no final e múltiplas statements
+            consulta_sql = consulta_sql.strip()
+            
+            # Remover ponto-e-vírgula no final
+            if consulta_sql.endswith(';'):
+                consulta_sql = consulta_sql[:-1].strip()
+            
+            # Verificar se tem múltiplas statements (ponto-e-vírgula no meio)
+            if ';' in consulta_sql:
+                st.error("❌ Apenas uma consulta SQL por vez é permitida. Remova o ponto-e-vírgula (;) do meio da query.")
+                st.info("💡 **Dica:** Se copiou do exemplo, remova todos os ponto-e-vírgulas (;)")
+                st.stop()
+            
             # Validação básica
             if validar_sql:
                 if not consulta_sql.strip().upper().startswith('SELECT'):
@@ -681,7 +805,7 @@ with tab2:
                         if df_result[col].dtype in ['float64', 'int64']:
                             df_result[f'{col}_fmt'] = df_result[col].apply(format_currency)
                     
-                    st.dataframe(df_result, use_container_width=True, hide_index=True, height=500)
+                    st.dataframe(df_result, width="stretch", hide_index=True, height=500)
                     
                     # Exportação
                     csv = df_result.to_csv(index=False).encode('utf-8')

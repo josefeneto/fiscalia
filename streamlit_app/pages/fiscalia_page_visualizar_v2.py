@@ -11,12 +11,23 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from sqlalchemy import text
 
-# Adicionar src ao path
-root_path = Path(__file__).parent.parent
-sys.path.insert(0, str(root_path))
+# Adicionar src ao path de forma robusta
+current_file = Path(__file__).resolve()
+root_path = current_file.parent.parent
+src_path = root_path / 'src'
 
-from src.database.db_manager import DatabaseManager
-from streamlit_app.components.common import show_header, show_success, show_error, show_info
+# Adicionar ambos ao path se não existirem
+for path in [str(root_path), str(src_path)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Importar
+try:
+    from src.database.db_manager import DatabaseManager
+    from streamlit_app.components.common import show_header, show_success, show_error, show_info
+except ImportError as e:
+    st.error(f"❌ Erro ao importar módulos: {e}")
+    st.stop()
 
 # Configuração
 st.set_page_config(
@@ -114,14 +125,14 @@ st.markdown("### 📅 Período de Análise")
 
 col1, col2, col3 = st.columns([1, 1, 2])
 
-# Default: mês corrente
+# Default: início do ano corrente
 hoje = datetime.now()
-primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
+inicio_ano = datetime(hoje.year, 1, 1)
 
 with col1:
     data_inicio_global = st.date_input(
         "Data Início:",
-        value=primeiro_dia_mes,
+        value=inicio_ano,
         key="data_inicio_visualizar"
     )
 
@@ -134,7 +145,7 @@ with col2:
 
 with col3:
     dias_selecionados = (data_fim_global - data_inicio_global).days
-    st.info(f"📊 Período selecionado: {dias_selecionados} dias")
+    st.info(f"📊 Período: {dias_selecionados} dias ({data_inicio_global.strftime('%d/%m/%Y')} a {data_fim_global.strftime('%d/%m/%Y')})")
 
 st.markdown("---")
 
@@ -243,7 +254,7 @@ if selected_tab == "📄 Documentos para ERP":
         
         st.dataframe(
             df_display,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=400
         )
@@ -263,7 +274,7 @@ if selected_tab == "📄 Documentos para ERP":
                 data=csv_data,
                 file_name=f"docs_erp_{timestamp}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         
         with col2:
@@ -273,7 +284,7 @@ if selected_tab == "📄 Documentos para ERP":
                 data=excel_data,
                 file_name=f"docs_erp_{timestamp}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width="stretch"
             )
         
         with col3:
@@ -365,7 +376,7 @@ else:  # "📋 Registo de Resultados"
         
         st.dataframe(
             df_display,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=400
         )
@@ -385,7 +396,7 @@ else:  # "📋 Registo de Resultados"
                 data=csv_data,
                 file_name=f"registo_resultados_{timestamp}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         
         with col2:
@@ -395,7 +406,7 @@ else:  # "📋 Registo de Resultados"
                 data=excel_data,
                 file_name=f"registo_resultados_{timestamp}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width="stretch"
             )
         
         with col3:
@@ -424,7 +435,7 @@ with st.sidebar:
     - ✅ Sem configuração manual
     """)
     
-    if st.button("🔄 Atualizar Dados", use_container_width=True):
+    if st.button("🔄 Atualizar Dados", width="stretch"):
         st.rerun()
 
 # ==================== FOOTER ====================

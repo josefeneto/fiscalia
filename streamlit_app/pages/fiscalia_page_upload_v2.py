@@ -10,14 +10,25 @@ from datetime import datetime
 import zipfile
 import io
 
-# Adicionar src ao path
-root_path = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(root_path))
+# Adicionar src ao path de forma robusta
+current_file = Path(__file__).resolve()
+root_path = current_file.parent.parent.parent
+src_path = root_path / 'src'
 
-from src.processors.nfe_processor import NFeProcessor
-from src.database.db_manager import DatabaseManager
-from src.utils.config import get_settings
-from streamlit_app.components.common import show_header, show_success, show_error, show_info
+# Adicionar ambos ao path se não existirem
+for path in [str(root_path), str(src_path)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Importar
+try:
+    from src.processors.nfe_processor import NFeProcessor
+    from src.database.db_manager import DatabaseManager
+    from src.utils.config import get_settings
+    from streamlit_app.components.common import show_header, show_success, show_error, show_info
+except ImportError as e:
+    st.error(f"❌ Erro ao importar módulos: {e}")
+    st.stop()
 
 # Configuração
 st.set_page_config(page_title="Upload - Fiscalia", page_icon="📤", layout="wide")
@@ -192,7 +203,7 @@ with tab1:
         col1, col2 = st.columns([3, 1])
         
         with col2:
-            process_btn = st.button("🚀 Processar", type="primary", use_container_width=True, key="btn_xml")
+            process_btn = st.button("🚀 Processar", type="primary", width="stretch", key="btn_xml")
         
         if process_btn:
             st.write("---")
@@ -360,7 +371,7 @@ with tab2:
             col1, col2 = st.columns([3, 1])
             
             with col2:
-                process_zip_btn = st.button("🚀 Processar ZIP", type="primary", use_container_width=True, key="btn_zip")
+                process_zip_btn = st.button("🚀 Processar ZIP", type="primary", width="stretch", key="btn_zip")
             
             if process_zip_btn:
                 if len(xml_files) > 50:

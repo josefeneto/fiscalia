@@ -10,13 +10,30 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from sqlalchemy import text
+import warnings
 
-# Adicionar src ao path
-root_path = Path(__file__).parent.parent
-sys.path.insert(0, str(root_path))
+# Suprimir TODOS os warnings de deprecation
+warnings.filterwarnings('ignore')
+import logging
+logging.getLogger('streamlit').setLevel(logging.ERROR)
 
-from src.database.db_manager import DatabaseManager
-from streamlit_app.components.common import show_header, show_info
+# Adicionar src ao path de forma robusta
+current_file = Path(__file__).resolve()
+root_path = current_file.parent.parent
+src_path = root_path / 'src'
+
+# Adicionar ambos ao path se não existirem
+for path in [str(root_path), str(src_path)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Importar
+try:
+    from src.database.db_manager import DatabaseManager
+    from streamlit_app.components.common import show_header, show_info
+except ImportError as e:
+    st.error(f"❌ Erro ao importar módulos: {e}")
+    st.stop()
 
 # Configuração
 st.set_page_config(
@@ -88,12 +105,12 @@ st.markdown("### 📅 Período de Análise")
 col1, col2, col3 = st.columns([1, 1, 2])
 
 hoje = datetime.now()
-primeiro_dia_mes = datetime(hoje.year, hoje.month, 1)
+inicio_ano = datetime(hoje.year, 1, 1)
 
 with col1:
     data_inicio = st.date_input(
         "Data Início:",
-        value=primeiro_dia_mes,
+        value=inicio_ano,
         key="data_inicio_stats"
     )
 
@@ -106,7 +123,7 @@ with col2:
 
 with col3:
     dias_selecionados = (data_fim - data_inicio).days
-    st.info(f"📊 Período selecionado: {dias_selecionados} dias")
+    st.info(f"📊 Período: {dias_selecionados} dias ({data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')})")
 
 st.markdown("---")
 
@@ -179,7 +196,7 @@ with col1:
             color_continuous_scale='Blues'
         )
         fig_uf.update_layout(height=400, showlegend=False)
-        st.plotly_chart(fig_uf, use_container_width=True)
+        st.plotly_chart(fig_uf, width="stretch")
     else:
         st.info("📊 Dados de UF não disponíveis")
 
@@ -200,7 +217,7 @@ with col2:
             color_continuous_scale='Greens'
         )
         fig_valor.update_layout(height=400, showlegend=False)
-        st.plotly_chart(fig_valor, use_container_width=True)
+        st.plotly_chart(fig_valor, width="stretch")
     else:
         st.info("📊 Dados de valor não disponíveis")
 
@@ -240,7 +257,7 @@ with col1:
                 yaxis_title='Quantidade'
             )
             fig_tempo.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig_tempo, use_container_width=True)
+            st.plotly_chart(fig_tempo, width="stretch")
         else:
             st.info("📊 Sem dados com datas válidas")
     else:
@@ -263,7 +280,7 @@ with col2:
             color_discrete_map={'Processado': '#28a745', 'Pendente': '#ffc107'}
         )
         fig_erp.update_layout(height=400)
-        st.plotly_chart(fig_erp, use_container_width=True)
+        st.plotly_chart(fig_erp, width="stretch")
     else:
         st.info("📊 Dados de status ERP não disponíveis")
 
@@ -290,7 +307,7 @@ with col1:
         df_emit['Valor Total'] = df_emit['Valor Total (€)'].apply(format_currency)
         df_emit = df_emit[['Emitente', 'Valor Total', 'Qtd Docs']]
         
-        st.dataframe(df_emit, use_container_width=True, hide_index=True, height=400)
+        st.dataframe(df_emit, width="stretch", hide_index=True, height=400)
     else:
         st.info("📊 Dados de emitentes não disponíveis")
 
@@ -309,7 +326,7 @@ with col2:
         df_dest['Valor Total'] = df_dest['Valor Total (€)'].apply(format_currency)
         df_dest = df_dest[['Destinatário', 'Valor Total', 'Qtd Docs']]
         
-        st.dataframe(df_dest, use_container_width=True, hide_index=True, height=400)
+        st.dataframe(df_dest, width="stretch", hide_index=True, height=400)
     else:
         st.info("📊 Dados de destinatários não disponíveis")
 
@@ -332,7 +349,7 @@ if 'valor_total' in df.columns:
             title='Distribuição de Valores'
         )
         fig_hist.update_layout(height=300)
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
     
     with col2:
         st.markdown("#### 📈 Estatísticas")
@@ -361,7 +378,7 @@ if 'valor_total' in df.columns:
             title='Documentos por Faixa'
         )
         fig_faixas.update_layout(height=300)
-        st.plotly_chart(fig_faixas, use_container_width=True)
+        st.plotly_chart(fig_faixas, width="stretch")
 
 # ==================== SIDEBAR ====================
 
@@ -391,7 +408,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    if st.button("🔄 Atualizar Dados", use_container_width=True):
+    if st.button("🔄 Atualizar Dados", width="stretch"):
         st.rerun()
 
 # ==================== FOOTER ====================

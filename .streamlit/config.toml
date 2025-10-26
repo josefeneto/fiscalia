@@ -1,20 +1,22 @@
+[server]
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 200
+
 [theme]
-primaryColor = "#1f77b4"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
+primaryColor = "#FF4B4B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
 textColor = "#262730"
 font = "sans serif"
 
-[server]
-headless = true
-port = 8501
-enableCORS = false
-enableXsrfProtection = true
-maxUploadSize = 500
+[logger]
+level = "error"
+messageFormat = "%(asctime)s %(message)s"
 
-[browser]
-gatherUsageStats = false
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"
 
 [runner]
-magicEnabled = true
 fastReruns = true
